@@ -42,6 +42,18 @@ class GPTLargeConfig(GPTConfig):
     n_head = 16
     n_embd = 1536
 
+class GPTXLConfig(GPTConfig):
+    """ GPT3-XL like network roughly 1.3B params """
+    n_layer = 24
+    n_head = 24
+    n_embd = 2048
+
+class GPTXXLConfig(GPTConfig):
+    """ GPT3-XL like network roughly 2.7B params """
+    n_layer = 32
+    n_head = 32
+    n_embd = 2560
+
 class CausalSelfAttention(nn.Module):
     """
     A vanilla multi-head masked self-attention layer with a projection at the end.
@@ -63,8 +75,11 @@ class CausalSelfAttention(nn.Module):
         self.proj = nn.Linear(config.n_embd, config.n_embd, device=device)
         # causal mask to ensure that attention is only applied to the left in the input sequence
         # TODO: leave buffer on CPU for now, until we can do meta_tensor.to_empty()
-        self.register_buffer("mask", torch.tril(torch.ones(config.block_size, config.block_size))
-                                     .view(1, 1, config.block_size, config.block_size))
+        self.register_buffer(
+            "mask",
+            torch.tril(torch.ones(config.block_size, config.block_size))
+                 .view(1, 1, config.block_size, config.block_size)
+        )
         self.n_head = config.n_head
 
     def reset_parameters(self):
@@ -145,16 +160,18 @@ class Block(nn.Module):
 class GPT(nn.Module):
     """  the full GPT language model, with a context size of block_size """
 
-    def __init__(self, config):
+    def __init__(self, config, device=None):
         super().__init__()
 
         # input embedding stem
-        self.emb_stem = EmbeddingStem(config)
+        self.emb_stem = EmbeddingStem(config, device=device)
         # transformer
-        self.blocks = nn.Sequential(*[Block(config) for _ in range(config.n_layer)])
+        self.blocks = nn.Sequential(
+            *[Block(config, device=device) for _ in range(config.n_layer)]
+        )
         # decoder head
-        self.ln_f = nn.LayerNorm(config.n_embd)
-        self.head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+        self.ln_f = nn.LayerNorm(config.n_embd, device=device)
+        self.head = nn.Linear(config.n_embd, config.vocab_size, bias=False, device=device)
 
         logger.info("number of parameters: %e", sum(p.numel() for p in self.parameters()))
 
