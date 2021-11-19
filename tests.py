@@ -15,11 +15,11 @@ from torch.distributed.pipeline.sync import Pipe
 def test_gpt_small():
     config = TrainConfig()
 
-    gpt1 = GPT(GPTSmallConfig(vocab_size=config.vocab_size, block_size=config.block_size))
-    opt = configure_optimizers(gpt1, config)
+    gpt = GPT(GPTSmallConfig(vocab_size=config.vocab_size, block_size=config.block_size)).cuda()
+    opt = configure_optimizers(gpt, config)
 
-    x = torch.randint(0, config.vocab_size, (config.batch_size, config.block_size))
-    gpt1(x).sum().backward()
+    x = torch.randint(0, config.vocab_size, (config.batch_size, config.block_size)).cuda()
+    gpt(x).sum().backward()
     opt.step()
 
     print("test GPT3-Small done")
@@ -28,11 +28,11 @@ def test_gpt_small():
 def test_gpt_large():
     config = TrainConfig()
 
-    gpt1 = GPT(GPTLargeConfig(vocab_size=config.vocab_size, block_size=config.block_size))
-    opt = configure_optimizers(gpt1, config)
+    gpt = GPT(GPTLargeConfig(vocab_size=config.vocab_size, block_size=config.block_size)).cuda()
+    opt = configure_optimizers(gpt, config)
 
-    x = torch.randint(0, config.vocab_size, (config.batch_size, config.block_size))
-    gpt1(x).sum().backward()
+    x = torch.randint(0, config.vocab_size, (config.batch_size, config.block_size)).cuda()
+    gpt(x).sum().backward()
     opt.step()
 
     print("test GPT3-Large done")

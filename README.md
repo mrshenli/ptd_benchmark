@@ -49,4 +49,28 @@ torchrun --nnodes=1 --nproc_per_node=1 --rdzv_id=100 --rdzv_endpoint="localhost:
 
 #### Launch on GCP
 
+First, ssh to the SLURM login node. 
 
+```
+export CLUSTER_ZONE="us-central1-b"
+export CLUSTER_LOGIN_NODE=$(gcloud compute instances list \
+    --zones ${CLUSTER_ZONE} \
+    --filter="name ~ shen*.*login." \
+    --format="value(name)" | head -n1)
+gcloud compute ssh ${CLUSTER_LOGIN_NODE} \
+    --zone $CLUSTER_ZONE
+```
+
+Run `sinfo` to check there are at least 4 nodes idle. 
+
+Launc DDP on 4 nodes (i.e., 32 GPUs).
+
+```
+srun -p train -t 5:00:00 --gpus-per-node=8 --cpus-per-task=96 --nodes=4 --pty /home/shenli_fb_com/project/ptd_benchmark/launch_4_node_ddp.sh
+```
+
+Launch Pipeline + DDP on 4 nodes, where each pipeline spans two GPUs. So, there are 16 pipeline in total.
+
+```
+srun -p train -t 5:00:00 --gpus-per-node=8 --cpus-per-task=96 --nodes=4 --pty /home/shenli_fb_com/project/ptd_benchmark/launch_4_node_pipeline.sh 
+```
