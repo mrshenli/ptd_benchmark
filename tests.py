@@ -2,8 +2,9 @@ from models import (
     GPT,
     GPTSmallConfig,
     GPTLargeConfig,
+    ShardedGPT,
     configure_optimizers,
-    sequential_gpt
+    sequential_gpt,
 )
 from trainer import TrainConfig
 
@@ -77,7 +78,29 @@ def test_sequential_gpt_large():
     _test_sequential_gpt(train_config, gpt_config)
 
 
-test_gpt_small()
-test_gpt_large()
-test_sequential_gpt_small()
-test_sequential_gpt_large()
+def test_fsdp_gpt_small():
+    os.environ["MASTER_ADDR"] = "localhost"
+    os.environ["MASTER_PORT"] = "5678"
+    torch.distributed.init_process_group(backend="nccl", world_size=1, rank=0)
+
+    config = TrainConfig()
+
+    gpt = ShardedGPT(GPTSmallConfig(vocab_size=config.vocab_size, block_size=config.block_size)).cuda()
+
+    print(f"named parameters {len(list(gpt.named_parameters()))}, parameters {len(list(gpt.parameters()))}")
+    print(f"{dict(gpt.named_parameters()).keys()}")
+
+    opt = torch.optim.AdamW(gpt.parameters(), lr=config.learning_rate, betas=config.betas)
+
+    x = torch.randint(0, config.vocab_size, (config.batch_size, config.block_size)).cuda()
+    gpt(x).sum().backward()
+    opt.step()
+
+    print("test Sharded GPT3-Small done")
+
+
+#test_gpt_small()
+#test_gpt_large()
+#test_sequential_gpt_small()
+#test_sequential_gpt_large()
+test_fsdp_gpt_small()

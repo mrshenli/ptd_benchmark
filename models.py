@@ -16,6 +16,8 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
+from torch.distributed._fsdp import FullyShardedDataParallel as FSDP
+
 logger = logging.getLogger(__name__)
 
 class GPTConfig:
@@ -212,7 +214,7 @@ def configure_optimizers(model, train_config):
                 no_decay.add(fpn)
 
     # validate that we considered every parameter
-    param_dict = {pn: p for pn, p in model.named_parameters()}
+    param_dict = {pn: p for pn, p in model.named_parameters() if "_fsdp_wrapped_module" not in pn}
     inter_params = decay & no_decay
     union_params = decay | no_decay
     assert len(inter_params) == 0, "parameters %s made it into both decay/no_decay sets!" % (str(inter_params), )
@@ -270,3 +272,26 @@ def sequential_gpt(config, devices):
 
     # create nn.Sequential
     return nn.Sequential(*[nn.Sequential(*phase) for phase in phases])
+
+
+class ShardedGPT(nn.Module):
+    def __init__(self, config, device=None):
+        super().__init__()
+
+        # input embedding stem
+        self.emb_stem = FSDP(EmbeddingStem(config, device=device))
+        # transformer
+        self.blocks = nn.Sequential(
+            *[FSDP(Block(config, device=device)) for _ in range(config.n_layer)]
+        )
+        # decoder head
+        self.ln_f = FSDP(nn.LayerNorm(config.n_embd, device=device))
+        self.head = FSDP(nn.Linear(config.n_embd, config.vocab_size, bias=False, device=device))
+
+        logger.info("number of parameters: %e", sum(p.numel() for p in self.parameters()))
+
+    def forward(self, idx):
+        x = self.emb_stem(idx)
+        x = self.blocks(x)
+        x = self.ln_f(x)
+        return self.head(x)

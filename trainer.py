@@ -8,6 +8,7 @@ from models import (
     GPT,
     GPTSmallConfig,
     GPTLargeConfig,
+    ShardedGPT,
     configure_optimizers,
     sequential_gpt
 )
@@ -97,7 +98,7 @@ def build_ddp_model(args):
 
     # get local model, for DDP, the entire model resides on cuda:0
     if args.model.startswith("GPT"):
-        # still nees to call to(device) because GPT buffer is still on CPU
+        # still needs to call to(device) because GPT buffer is still on CPU
         local_model = GPT(get_gpt_config(args), device=device).to(device)
     elif args.model.startswith("ResNet"):
         # TODO
@@ -132,15 +133,33 @@ def build_pdp_model(args):
     return ddp
 
 
+def build_fsdp_model(args):
+    device = torch.device("cuda:0")
+
+    if args.model.startswith("GPT"):
+        # still needs to call to(device) because GPT buffer is still on CPU
+        return ShardedGPT(get_gpt_config(args), device=device).to(device)
+    elif args.model.startswith("ResNet"):
+        # TODO
+        raise ValueError("ResNet Model Not Implementated")
+    else:
+        raise ValueError(f"Unrecognized Model {args.model}")
+
+
 def train(args):
+
+    print(f"# of visible devices = {torch.cuda.device_count()}")
+
     # build DDP/Pipeline/FSDP model
     if args.mode == "ddp":
         model = build_ddp_model(args)
     elif args.mode == "pdp":
         model = build_pdp_model(args)
+    elif args.mode == "fsdp":
+        model = build_fsdp_model(args)
 
     # build dummy inputs and optimizer
-    if args.model.startswith("GPT"):
+    if "GPT" in args.model:
         inputs = torch.randint(0, args.vocab_size, (args.batch_size, args.block_size), device="cuda:0")
 
         opt = configure_optimizers(
