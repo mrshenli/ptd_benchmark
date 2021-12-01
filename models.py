@@ -39,7 +39,7 @@ class GPTSmallConfig(GPTConfig):
     n_embd = 768
 
 class GPTMediumConfig(GPTConfig):
-    """ GPT3-large like network roughly 760M params """
+    """ GPT3-large like network roughly 350M params """
     n_layer = 24
     n_head = 16
     n_embd = 1024
@@ -54,7 +54,7 @@ class GPTXLConfig(GPTConfig):
     """ GPT3-XL like network roughly 1.3B params """
     n_layer = 24
     n_head = 24
-    n_embd = 2048
+    n_embd = 2064
 
 class GPTXXLConfig(GPTConfig):
     """ GPT3-XL like network roughly 2.7B params """
@@ -63,21 +63,21 @@ class GPTXXLConfig(GPTConfig):
     n_embd = 2560
 
 class GPTXXXLConfig(GPTConfig):
-    """ GPT3-XL like network roughly 2.7B params """
+    """ GPT3-XL like network roughly 6.7B params """
     n_layer = 32
     n_head = 32
     n_embd = 4096
 
 
 class GPT13BConfig(GPTConfig):
-    """ GPT3-XL like network roughly 2.7B params """
-    n_layer = 40
-    n_head = 40
-    n_embd = 5140
+    """ GPT3-XL like network roughly 13B params """
+    n_layer = 48
+    n_head = 48
+    n_embd = 5184
 
 
 class GPT175BConfig(GPTConfig):
-    """ GPT3-XL like network roughly 2.7B params """
+    """ GPT3-XL like network roughly 175B params """
     n_layer = 96
     n_head = 96
     n_embd = 12288
@@ -92,7 +92,7 @@ class CausalSelfAttention(nn.Module):
 
     def __init__(self, config, device=None):
         super().__init__()
-        assert config.n_embd % config.n_head == 0
+        assert config.n_embd % config.n_head == 0, f"n_embd={config.n_embd}, n_head={config.n_head}"
         # key, query, value projections for all heads
         self.key = nn.Linear(config.n_embd, config.n_embd, device=device)
         self.query = nn.Linear(config.n_embd, config.n_embd, device=device)

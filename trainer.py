@@ -2,14 +2,20 @@ from argparse import ArgumentParser
 from dataclasses import dataclass
 from posix import posix_spawn
 from typing import Tuple
+import gc
 import os
 
 from models import (
     GPT,
     GPTSmallConfig,
+    GPTMediumConfig,
     GPTLargeConfig,
+    GPTXLConfig,
+    GPTXXLConfig,
+    GPTXXXLConfig,
+    GPT13BConfig,
+    GPT175BConfig,
     ShardedGPT,
-    configure_optimizers,
     sequential_gpt
 )
 
@@ -17,6 +23,7 @@ import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 from torch.distributed.pipeline.sync import Pipe
+from torch.profiler import profile, record_function, ProfilerActivity
 
 
 @dataclass
@@ -84,6 +91,12 @@ def parse_args():
     return parser.parse_args()
 
 
+def print_peak_memory(prefix, device):
+    rank = int(os.getenv("RANK"))
+    if rank == 0:
+        print(f"{prefix}: {torch.cuda.max_memory_allocated(device) // 1e6}MB ")
+
+
 def get_gpt_config(args):
     assert args.model.startswith("GPT")
     config_class_name = args.model + "Config"
@@ -148,7 +161,7 @@ def build_fsdp_model(args):
 
 def train(args):
 
-    print(f"# of visible devices = {torch.cuda.device_count()}")
+    print(f"# of visible devices = {torch.cuda.device_count()}", flush=True)
 
     # build DDP/Pipeline/FSDP model
     if args.mode == "ddp":
@@ -157,61 +170,46 @@ def train(args):
         model = build_pdp_model(args)
     elif args.mode == "fsdp":
         model = build_fsdp_model(args)
+        print_peak_memory("Memory allocation after model init", "cuda:0")
 
-    # build dummy inputs and optimizer
+    # build dummy inputs
     if "GPT" in args.model:
         inputs = torch.randint(0, args.vocab_size, (args.batch_size, args.block_size), device="cuda:0")
-
-        opt = configure_optimizers(
-            model,
-            TrainConfig(
-                vocab_size=args.vocab_size,
-                block_size=args.block_size,
-                batch_size=args.batch_size,
-            )
-        )
     else:
-        opt = torch.optim.SGD(model.parameters(), lr=0.01)
+        raise ValueError("Inputs not implemented for non-GPT models")
+
+    opt = torch.optim.SGD(model.parameters(), lr=0.01)
+    print_peak_memory("Memory allocation after optimizer", "cuda:0")
 
     # warmup
-    for i in range(2):
+    for i in range(4):
         out = model(inputs)
+        print_peak_memory(f"Step {i} Memory allocation after forward", "cuda:0")
         loss = out.sum() if isinstance(out, torch.Tensor) else out.local_value().sum()
         loss.backward()
+        print_peak_memory(f"Step {i} Memory allocation after backward", "cuda:0")
+        del loss
+        del out
+        print_peak_memory(f"Step {i} Memory allocation after del loss", "cuda:0")
         opt.step()
+        print_peak_memory(f"Step {i} Memory allocation after optimizer", "cuda:0")
         opt.zero_grad()
 
-    # measure
-    e_pre_step = torch.cuda.Event(enable_timing=True)
-    e_post_fwd = torch.cuda.Event(enable_timing=True)
-    e_post_bwd = torch.cuda.Event(enable_timing=True)
-    e_post_opt = torch.cuda.Event(enable_timing=True)
-    for i in range(6):
-        e_pre_step.record()
-        out = model(inputs)
-        loss = out.sum() if isinstance(out, torch.Tensor) else out.local_value().sum()
-        e_post_fwd.record()
-        loss.backward()
-        e_post_bwd.record()
-        opt.step()
-        opt.zero_grad()
-        e_post_opt.record()
+    with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
+        for i in range(4):
+            out = model(inputs)
+            loss = out.sum() if isinstance(out, torch.Tensor) else out.local_value().sum()
+            loss.backward()
+            del loss
+            del out
+            gc.collect()
+            opt.step()
+            opt.zero_grad()
 
-        # events can only be consumed when all prior CUDA ops are done.
-        # N.B., we might need to store events and only call synchronize
-        # after the for loop to avoid killing overlap between opt and next
-        # forward
-        e_post_opt.synchronize()
-
-        # N.B., this is inaccurate for pipeline, as it only captures CUDA ops
-        # on CUDA0. We will need sth like this:
-        # https://gist.github.com/mrshenli/8c39c35612218e0d6d772910bca2f737
-        print(
-            f"Rank {os.getenv('RANK')} Iteration {i}: "
-            f"FWD Time = {e_pre_step.elapsed_time(e_post_fwd)}, "
-            f"BWD Time = {e_post_fwd.elapsed_time(e_post_bwd)}, "
-            f"OPT Time = {e_post_bwd.elapsed_time(e_post_opt)}"
-        )
+    rank = int(os.getenv("RANK"))
+    ws = int(os.getenv("WORLD_SIZE"))
+    if rank == 1:
+        prof.export_chrome_trace(f"/home/shenli_fb_com/project/{args.mode}_{args.model}_ws{ws}_bs{args.batch_size}_vs{args.vocab_size}_blk{args.block_size}.json")
 
 
 def setup(args):
@@ -235,7 +233,7 @@ def setup(args):
 
     world_size = int(os.getenv("WORLD_SIZE"))
     rank = int(os.getenv("RANK"))
-    print(f"World size is {world_size}")
+    print(f"World size is {world_size}", flush=True)
     dist.init_process_group("nccl", rank=rank, world_size=world_size)
     if args.mode == "pdp":
         dist.rpc.init_rpc(f"worker{rank}", rank=rank, world_size=world_size)
@@ -248,6 +246,8 @@ def teardown(args):
 
 def main():
     args=parse_args()
+
+    print(f"parsed args {args}", flush=True)
 
     setup(args)
     train(args)
