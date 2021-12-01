@@ -1,5 +1,6 @@
 from argparse import ArgumentParser
 from dataclasses import dataclass
+from datetime import datetime
 from posix import posix_spawn
 from typing import Tuple
 import gc
@@ -23,7 +24,7 @@ import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 from torch.distributed.pipeline.sync import Pipe
-from torch.profiler import profile, record_function, ProfilerActivity
+from torch.profiler import profile, record_function, ProfilerActivity, tensorboard_trace_handler
 
 
 @dataclass
@@ -158,6 +159,13 @@ def build_fsdp_model(args):
     else:
         raise ValueError(f"Unrecognized Model {args.model}")
 
+        
+def my_tensorboard_trace_handler(dir_name: str, rank, worker_name = None, use_gzip: bool = False):
+    if rank < 3:
+        return tensorboard_trace_handler(dir_name, worker_name, use_gzip)
+    else:
+        return None
+
 
 def train(args):
 
@@ -195,7 +203,14 @@ def train(args):
         print_peak_memory(f"Step {i} Memory allocation after optimizer", "cuda:0")
         opt.zero_grad()
 
-    with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
+    now = datetime.now()
+    with profile(
+        activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+        record_shapes=True,
+        with_stack=True,
+        with_flops=True,
+        on_trace_ready=my_tensorboard_trace_handler(f"tb/{now.strftime('%Y_%m_%d_%H_%M_%S')}", rank, use_gzip=True)
+    ) as prof:
         for i in range(4):
             out = model(inputs)
             loss = out.sum() if isinstance(out, torch.Tensor) else out.local_value().sum()
