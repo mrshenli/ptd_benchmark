@@ -38,6 +38,12 @@ class GPTSmallConfig(GPTConfig):
     n_head = 12
     n_embd = 768
 
+class GPTMediumConfig(GPTConfig):
+    """ GPT3-large like network roughly 760M params """
+    n_layer = 24
+    n_head = 16
+    n_embd = 1024
+
 class GPTLargeConfig(GPTConfig):
     """ GPT3-large like network roughly 760M params """
     n_layer = 24
@@ -55,6 +61,27 @@ class GPTXXLConfig(GPTConfig):
     n_layer = 32
     n_head = 32
     n_embd = 2560
+
+class GPTXXXLConfig(GPTConfig):
+    """ GPT3-XL like network roughly 2.7B params """
+    n_layer = 32
+    n_head = 32
+    n_embd = 4096
+
+
+class GPT13BConfig(GPTConfig):
+    """ GPT3-XL like network roughly 2.7B params """
+    n_layer = 40
+    n_head = 40
+    n_embd = 5140
+
+
+class GPT175BConfig(GPTConfig):
+    """ GPT3-XL like network roughly 2.7B params """
+    n_layer = 96
+    n_head = 96
+    n_embd = 12288
+
 
 class CausalSelfAttention(nn.Module):
     """
@@ -77,9 +104,10 @@ class CausalSelfAttention(nn.Module):
         self.proj = nn.Linear(config.n_embd, config.n_embd, device=device)
         # causal mask to ensure that attention is only applied to the left in the input sequence
         # TODO: leave buffer on CPU for now, until we can do meta_tensor.to_empty()
+        d = device if torch.device(device).type == "cuda" else "cpu"
         self.register_buffer(
             "mask",
-            torch.tril(torch.ones(config.block_size, config.block_size))
+            torch.tril(torch.ones(config.block_size, config.block_size, device=d))
                  .view(1, 1, config.block_size, config.block_size)
         )
         self.n_head = config.n_head

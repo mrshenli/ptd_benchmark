@@ -186,7 +186,7 @@ def train(args):
     e_post_fwd = torch.cuda.Event(enable_timing=True)
     e_post_bwd = torch.cuda.Event(enable_timing=True)
     e_post_opt = torch.cuda.Event(enable_timing=True)
-    for i in range(2):
+    for i in range(6):
         e_pre_step.record()
         out = model(inputs)
         loss = out.sum() if isinstance(out, torch.Tensor) else out.local_value().sum()
@@ -235,12 +235,15 @@ def setup(args):
 
     world_size = int(os.getenv("WORLD_SIZE"))
     rank = int(os.getenv("RANK"))
+    print(f"World size is {world_size}")
     dist.init_process_group("nccl", rank=rank, world_size=world_size)
-    dist.rpc.init_rpc(f"worker{rank}", rank=rank, world_size=world_size)
+    if args.mode == "pdp":
+        dist.rpc.init_rpc(f"worker{rank}", rank=rank, world_size=world_size)
 
 
-def teardown():
-    dist.rpc.shutdown()
+def teardown(args):
+    if args.mode == "pdp":
+        dist.rpc.shutdown()
 
 
 def main():
@@ -248,7 +251,7 @@ def main():
 
     setup(args)
     train(args)
-    teardown()
+    teardown(args)
 
 if __name__=="__main__":
     main()
