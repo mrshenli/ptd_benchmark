@@ -1,6 +1,7 @@
 from argparse import ArgumentParser
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from posix import posix_spawn
 from typing import Tuple
 import gc
@@ -225,7 +226,8 @@ def train(args):
             opt.zero_grad()
 
     if rank == 0:
-        prof.export_chrome_trace(f"chrome/{args.mode}_{args.model}_ws{ws}_bs{args.batch_size}_vs{args.vocab_size}_blk{args.block_size}.json")
+        Path("chrome").mkdir(parents=True, exist_ok=True)
+        prof.export_chrome_trace(f"chrome/{args.mode}_{args.model}_ws{ws}_bs{args.batch_size}_vs{args.vocab_size}_blk{args.block_size}.json.gz")
 
 
 def setup(args):
