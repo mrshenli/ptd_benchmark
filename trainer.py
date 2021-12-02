@@ -225,7 +225,7 @@ def train(args):
             opt.zero_grad()
 
     if rank == 0:
-        prof.export_chrome_trace(f"/home/shenli_fb_com/project/{args.mode}_{args.model}_ws{ws}_bs{args.batch_size}_vs{args.vocab_size}_blk{args.block_size}.json")
+        prof.export_chrome_trace(f"chrome/{args.mode}_{args.model}_ws{ws}_bs{args.batch_size}_vs{args.vocab_size}_blk{args.block_size}.json")
 
 
 def setup(args):
