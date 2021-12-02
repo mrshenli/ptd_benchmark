@@ -155,11 +155,11 @@ def build_fsdp_model(args):
         return ShardedGPT(get_gpt_config(args), device=device).to(device)
     elif args.model.startswith("ResNet"):
         # TODO
-        raise ValueError("ResNet Model Not Implementated")
+        raise ValueError("ResNet Model Not Implemented")
     else:
         raise ValueError(f"Unrecognized Model {args.model}")
 
-        
+
 def my_tensorboard_trace_handler(dir_name: str, rank, worker_name = None, use_gzip: bool = False):
     if rank < 3:
         return tensorboard_trace_handler(dir_name, worker_name, use_gzip)
@@ -171,7 +171,8 @@ def train(args):
     rank = int(os.getenv("RANK"))
     ws = int(os.getenv("WORLD_SIZE"))
 
-    print(f"# of visible devices = {torch.cuda.device_count()}", flush=True)
+    if rank == 0:
+        print(f"# of visible devices = {torch.cuda.device_count()}", flush=True)
 
     # build DDP/Pipeline/FSDP model
     if args.mode == "ddp":
@@ -248,7 +249,9 @@ def setup(args):
 
     world_size = int(os.getenv("WORLD_SIZE"))
     rank = int(os.getenv("RANK"))
-    print(f"World size is {world_size}", flush=True)
+    if rank == 0:
+        print(f"parsed args {args}")
+        print(f"World size is {world_size}")
     dist.init_process_group("nccl", rank=rank, world_size=world_size)
     if args.mode == "pdp":
         dist.rpc.init_rpc(f"worker{rank}", rank=rank, world_size=world_size)
@@ -261,8 +264,6 @@ def teardown(args):
 
 def main():
     args=parse_args()
-
-    print(f"parsed args {args}", flush=True)
 
     setup(args)
     train(args)
