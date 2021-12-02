@@ -168,6 +168,8 @@ def my_tensorboard_trace_handler(dir_name: str, rank, worker_name = None, use_gz
 
 
 def train(args):
+    rank = int(os.getenv("RANK"))
+    ws = int(os.getenv("WORLD_SIZE"))
 
     print(f"# of visible devices = {torch.cuda.device_count()}", flush=True)
 
@@ -221,8 +223,6 @@ def train(args):
             opt.step()
             opt.zero_grad()
 
-    rank = int(os.getenv("RANK"))
-    ws = int(os.getenv("WORLD_SIZE"))
     if rank == 1:
         prof.export_chrome_trace(f"/home/shenli_fb_com/project/{args.mode}_{args.model}_ws{ws}_bs{args.batch_size}_vs{args.vocab_size}_blk{args.block_size}.json")
 
