@@ -260,6 +260,9 @@ def setup(args):
 def teardown(args):
     if args.mode == "pdp":
         dist.rpc.shutdown()
+    rank = int(os.getenv("RANK"))
+    if rank == 0:
+        print("Finished")
 
 
 def main():
