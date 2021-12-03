@@ -1,6 +1,7 @@
 from argparse import ArgumentParser
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from posix import posix_spawn
 from typing import Tuple
 import gc
@@ -155,21 +156,24 @@ def build_fsdp_model(args):
         return ShardedGPT(get_gpt_config(args), device=device).to(device)
     elif args.model.startswith("ResNet"):
         # TODO
-        raise ValueError("ResNet Model Not Implementated")
+        raise ValueError("ResNet Model Not Implemented")
     else:
         raise ValueError(f"Unrecognized Model {args.model}")
 
-        
+
 def my_tensorboard_trace_handler(dir_name: str, rank, worker_name = None, use_gzip: bool = False):
-    if rank < 3:
+    if 0 < rank and rank < 4:
         return tensorboard_trace_handler(dir_name, worker_name, use_gzip)
     else:
         return None
 
 
 def train(args):
+    rank = int(os.getenv("RANK"))
+    ws = int(os.getenv("WORLD_SIZE"))
 
-    print(f"# of visible devices = {torch.cuda.device_count()}", flush=True)
+    if rank == 0:
+        print(f"# of visible devices = {torch.cuda.device_count()}", flush=True)
 
     # build DDP/Pipeline/FSDP model
     if args.mode == "ddp":
@@ -221,10 +225,9 @@ def train(args):
             opt.step()
             opt.zero_grad()
 
-    rank = int(os.getenv("RANK"))
-    ws = int(os.getenv("WORLD_SIZE"))
-    if rank == 1:
-        prof.export_chrome_trace(f"/home/shenli_fb_com/project/{args.mode}_{args.model}_ws{ws}_bs{args.batch_size}_vs{args.vocab_size}_blk{args.block_size}.json")
+    if rank == 0:
+        Path("chrome").mkdir(parents=True, exist_ok=True)
+        prof.export_chrome_trace(f"chrome/{args.mode}_{args.model}_ws{ws}_bs{args.batch_size}_vs{args.vocab_size}_blk{args.block_size}.json.gz")
 
 
 def setup(args):
@@ -248,7 +251,9 @@ def setup(args):
 
     world_size = int(os.getenv("WORLD_SIZE"))
     rank = int(os.getenv("RANK"))
-    print(f"World size is {world_size}", flush=True)
+    if rank == 0:
+        print(f"parsed args {args}")
+        print(f"World size is {world_size}")
     dist.init_process_group("nccl", rank=rank, world_size=world_size)
     if args.mode == "pdp":
         dist.rpc.init_rpc(f"worker{rank}", rank=rank, world_size=world_size)
@@ -257,12 +262,13 @@ def setup(args):
 def teardown(args):
     if args.mode == "pdp":
         dist.rpc.shutdown()
+    rank = int(os.getenv("RANK"))
+    if rank == 0:
+        print("Finished")
 
 
 def main():
     args=parse_args()
-
-    print(f"parsed args {args}", flush=True)
 
     setup(args)
     train(args)
