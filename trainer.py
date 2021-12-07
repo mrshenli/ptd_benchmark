@@ -1,11 +1,13 @@
-from argparse import ArgumentParser
+from argparse import Action, ArgumentParser
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from posix import posix_spawn
+from statistics import stdev
 from typing import Tuple
 import gc
 import os
+import time
 
 from models import (
     GPT,
@@ -38,6 +40,21 @@ class TrainConfig:
     batch_size : int = 10
 
 
+class ParseDType(Action):
+    def __init__(self, option_strings, dest, nargs=None, **kwargs):
+        super(ParseDType, self).__init__(option_strings, dest, **kwargs)
+        self.str_to_dtype = {
+            "fp32" : torch.float32,
+            "fp16" : torch.float16,
+        }
+
+    def __call__(self, parser, namespace, values, option_string=None, first=[True]):
+        if values in self.str_to_dtype:
+            namespace.dtype = self.str_to_dtype[values]
+        else:
+            raise ValueError(f"cannot parse {values}")
+
+
 def parse_args():
     parser = ArgumentParser(description="PyTorch Data Parallel Experiments")
 
@@ -53,6 +70,14 @@ def parse_args():
         type=str,
         default="ddp",
         help="ddp - DDP, pdp - Pipline and DDP, fsdp - FullyShardedDataParallel"
+    )
+
+    parser.add_argument(
+        "--dtype",
+        type=str,
+        action=ParseDType,
+        default=torch.float32,
+        help="Tensor dtype"
     )
 
     parser.add_argument(
@@ -137,7 +162,7 @@ def build_pdp_model(args):
     devices = [f"cuda:{d}" for d in range(args.ndevice_per_proc)]
     if not args.model.startswith("GPT"):
         raise ValueError("We shouldn't need pipeline for ResNet models")
-    gpt = sequential_gpt(get_gpt_config(args), devices=devices)
+    gpt = sequential_gpt(get_gpt_config(args), devices=devices, dtype=args.dtype)
     pipe = Pipe(gpt, chunks=args.chunks)
     ddp = DistributedDataParallel(
         pipe,
@@ -153,7 +178,7 @@ def build_fsdp_model(args):
 
     if args.model.startswith("GPT"):
         # still needs to call to(device) because GPT buffer is still on CPU
-        return ShardedGPT(get_gpt_config(args), device=device).to(device)
+        return ShardedGPT(get_gpt_config(args), device=device, dtype=args.dtype).to(device)
     elif args.model.startswith("ResNet"):
         # TODO
         raise ValueError("ResNet Model Not Implemented")
@@ -171,6 +196,13 @@ def my_tensorboard_trace_handler(dir_name: str, rank, worker_name = None, use_gz
 def train(args):
     rank = int(os.getenv("RANK"))
     ws = int(os.getenv("WORLD_SIZE"))
+
+    def sync_all_device():
+        # setup() has already configured CUDA_VISIBLE_DEVICES such that each
+        # process exclusively works on its own set of devices. So it's safe to
+        # do device sync here
+        for d in range(torch.cuda.device_count()):
+            torch.cuda.synchronize(d)
 
     if rank == 0:
         print(f"# of visible devices = {torch.cuda.device_count()}", flush=True)
@@ -207,15 +239,27 @@ def train(args):
         print_peak_memory(f"Step {i} Memory allocation after optimizer", "cuda:0")
         opt.zero_grad()
 
+    # make sure all pending warm up ops are done
+    sync_all_device()
+    dist.barrier()
+
+    tik = time.time()
+
     now = datetime.now()
+    n_iters = 4
     with profile(
         activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
         # record_shapes=True, # Causes seg fault in export_chrome_trace
         # with_stack=True, # Causes seg fault with EFA
         # with_flops=True, # Causes seg fault in export_chrome_trace
+        record_shapes=False,
+        with_stack=False,
+        with_flops=False,
         on_trace_ready=my_tensorboard_trace_handler(f"tb/{now.strftime('%Y_%m_%d_%H_%M_%S')}", rank, use_gzip=True)
     ) as prof:
-        for i in range(4):
+        # NOTE: using profiler will slowdown training. We should only use it when
+        # we need diagnose
+        for i in range(n_iters):
             out = model(inputs)
             loss = out.sum() if isinstance(out, torch.Tensor) else out.local_value().sum()
             loss.backward()
@@ -225,9 +269,33 @@ def train(args):
             opt.step()
             opt.zero_grad()
 
+    sync_all_device()
+    tok = time.time()
+    delays = [None for _ in range(ws)]
+    torch.distributed.all_gather_object(delays, (tok-tik) / n_iters)
+
     if rank == 0:
+        name = (
+            f"{args.mode}_{args.model}_"
+            f"ws{ws}_bs{args.batch_size}_"
+            f"vs{args.vocab_size}_blk{args.block_size}_"
+            f"fp{str(args.dtype)[-2:]}"
+        )
+
+        if args.mode == "pdp":
+            name += f"_ck{args.chunks}_nd{args.ndevice_per_proc}"
+
+        Path("delay").mkdir(parents=True, exist_ok=True)
+        fout = open(f"delay/{name}.txt", "w")
+        fout.write(f"delays = {sum(delays) / len(delays):.2f} ({stdev(delays):.2f})\n")
+        mem = max([torch.cuda.max_memory_allocated(i) for i in range(torch.cuda.device_count())])
+        fout.write(f"max mem = {mem // 1e6}MB\n")
+        fout.close()
+
         Path("chrome").mkdir(parents=True, exist_ok=True)
-        prof.export_chrome_trace(f"chrome/{args.mode}_{args.model}_ws{ws}_bs{args.batch_size}_vs{args.vocab_size}_blk{args.block_size}.json.gz")
+        prof.export_chrome_trace(f"chrome/{name}.json.gz")
+
+    dist.barrier()
 
 
 def setup(args):
@@ -248,7 +316,6 @@ def setup(args):
     else:
         raise ValueError(f"Unrecognized mode {args.mode}")
 
-
     world_size = int(os.getenv("WORLD_SIZE"))
     rank = int(os.getenv("RANK"))
     if rank == 0:
@@ -256,7 +323,18 @@ def setup(args):
         print(f"World size is {world_size}")
     dist.init_process_group("nccl", rank=rank, world_size=world_size)
     if args.mode == "pdp":
-        dist.rpc.init_rpc(f"worker{rank}", rank=rank, world_size=world_size)
+        # use fake RPC gang for local pipeline
+        options = dist.rpc.TensorPipeRpcBackendOptions(
+            num_worker_threads=8,
+            rpc_timeout=120, # 20 second timeout
+            init_method=f"tcp://localhost:{7777 + rank}",
+        )
+        dist.rpc.init_rpc(
+            f"worker{rank}",
+            rank=0,
+            world_size=1,
+            rpc_backend_options=options,
+        )
 
 
 def teardown(args):

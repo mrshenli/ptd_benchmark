@@ -1,6 +1,5 @@
 """
 This file was borrowed from https://github.com/karpathy/minGPT with modifications.
-
 GPT model:
 - the initial stem consists of a combination of token encoding and a positional encoding
 - the meat of it is a uniform sequence of Transformer blocks
@@ -90,24 +89,24 @@ class CausalSelfAttention(nn.Module):
     explicit implementation here to show that there is nothing too scary here.
     """
 
-    def __init__(self, config, device=None):
+    def __init__(self, config, device="cpu", dtype=torch.float32):
         super().__init__()
         assert config.n_embd % config.n_head == 0, f"n_embd={config.n_embd}, n_head={config.n_head}"
         # key, query, value projections for all heads
-        self.key = nn.Linear(config.n_embd, config.n_embd, device=device)
-        self.query = nn.Linear(config.n_embd, config.n_embd, device=device)
-        self.value = nn.Linear(config.n_embd, config.n_embd, device=device)
+        self.key = nn.Linear(config.n_embd, config.n_embd, device=device, dtype=dtype)
+        self.query = nn.Linear(config.n_embd, config.n_embd, device=device, dtype=dtype)
+        self.value = nn.Linear(config.n_embd, config.n_embd, device=device, dtype=dtype)
         # regularization
         self.attn_drop = nn.Dropout(config.attn_pdrop)
         self.resid_drop = nn.Dropout(config.resid_pdrop)
         # output projection
-        self.proj = nn.Linear(config.n_embd, config.n_embd, device=device)
+        self.proj = nn.Linear(config.n_embd, config.n_embd, device=device, dtype=dtype)
         # causal mask to ensure that attention is only applied to the left in the input sequence
         # TODO: leave buffer on CPU for now, until we can do meta_tensor.to_empty()
         d = device if torch.device(device).type == "cuda" else "cpu"
         self.register_buffer(
             "mask",
-            torch.tril(torch.ones(config.block_size, config.block_size, device=d))
+            torch.tril(torch.ones(config.block_size, config.block_size, device=d, dtype=dtype))
                  .view(1, 1, config.block_size, config.block_size)
         )
         self.n_head = config.n_head
@@ -139,12 +138,12 @@ class CausalSelfAttention(nn.Module):
 
 
 class EmbeddingStem(nn.Module):
-    def __init__(self, config, device=None):
+    def __init__(self, config, device="cpu", dtype=torch.float32):
         super().__init__()
 
         # input embedding stem
-        self.tok_emb = nn.Embedding(config.vocab_size, config.n_embd, device=device)
-        self.pos_emb = nn.Parameter(torch.zeros(1, config.block_size, config.n_embd, device=device))
+        self.tok_emb = nn.Embedding(config.vocab_size, config.n_embd, device=device, dtype=dtype)
+        self.pos_emb = nn.Parameter(torch.zeros(1, config.block_size, config.n_embd, device=device, dtype=dtype))
         self.drop = nn.Dropout(config.embd_pdrop)
         self.block_size = config.block_size
 
@@ -166,16 +165,16 @@ class Block(nn.Module):
     def fsdp_wrap(self, m):
         return FSDP(m) if self.fsdp else m
 
-    def __init__(self, config, device=None, fsdp=False):
+    def __init__(self, config, device=None, dtype=torch.float32, fsdp=False):
         super().__init__()
         self.fsdp = fsdp
-        self.ln1 = nn.LayerNorm(config.n_embd, device=device)
-        self.ln2 = nn.LayerNorm(config.n_embd, device=device)
-        self.attn = self.fsdp_wrap(CausalSelfAttention(config, device=device))
+        self.ln1 = nn.LayerNorm(config.n_embd, device=device, dtype=dtype)
+        self.ln2 = nn.LayerNorm(config.n_embd, device=device, dtype=dtype)
+        self.attn = self.fsdp_wrap(CausalSelfAttention(config, device=device, dtype=dtype))
         self.mlp = nn.Sequential(
-            self.fsdp_wrap(nn.Linear(config.n_embd, 4 * config.n_embd, device=device)),
+            self.fsdp_wrap(nn.Linear(config.n_embd, 4 * config.n_embd, device=device, dtype=dtype)),
             nn.GELU(),
-            self.fsdp_wrap(nn.Linear(4 * config.n_embd, config.n_embd, device=device)),
+            self.fsdp_wrap(nn.Linear(4 * config.n_embd, config.n_embd, device=device, dtype=dtype)),
             nn.Dropout(config.resid_pdrop),
         )
 
@@ -194,18 +193,18 @@ class Block(nn.Module):
 class GPT(nn.Module):
     """  the full GPT language model, with a context size of block_size """
 
-    def __init__(self, config, device=None):
+    def __init__(self, config, device="cpu", dtype=torch.float32):
         super().__init__()
 
         # input embedding stem
-        self.emb_stem = EmbeddingStem(config, device=device)
+        self.emb_stem = EmbeddingStem(config, device=device, dtype=dtype)
         # transformer
         self.blocks = nn.Sequential(
-            *[Block(config, device=device) for _ in range(config.n_layer)]
+            *[Block(config, device=device, dtype=dtype) for _ in range(config.n_layer)]
         )
         # decoder head
-        self.ln_f = nn.LayerNorm(config.n_embd, device=device)
-        self.head = nn.Linear(config.n_embd, config.vocab_size, bias=False, device=device)
+        self.ln_f = nn.LayerNorm(config.n_embd, device=device, dtype=dtype)
+        self.head = nn.Linear(config.n_embd, config.vocab_size, bias=False, device=device, dtype=dtype)
 
         logger.info("number of parameters: %e", sum(p.numel() for p in self.parameters()))
 
@@ -262,16 +261,16 @@ def configure_optimizers(model, train_config):
     return optimizer
 
 
-def sequential_gpt(config, devices):
+def sequential_gpt(config, devices, dtype=torch.float32):
     """
     Returns an ``nn.Sequential`` of GPT model balanced across the given devices.
     N.B.: this function does not dedup devices.
     """
     # put all layers into a list
-    emb_stem = EmbeddingStem(config, device="meta")
-    blocks = [Block(config, device="meta") for _ in range(config.n_layer)]
-    ln_f = nn.LayerNorm(config.n_embd, device="meta")
-    head = nn.Linear(config.n_embd, config.vocab_size, bias=False, device="meta")
+    emb_stem = EmbeddingStem(config, device="meta", dtype=dtype)
+    blocks = [Block(config, device="meta", dtype=dtype) for _ in range(config.n_layer)]
+    ln_f = nn.LayerNorm(config.n_embd, device="meta", dtype=dtype)
+    head = nn.Linear(config.n_embd, config.vocab_size, bias=False, device="meta", dtype=dtype)
 
     layers = [emb_stem, *blocks, ln_f, head]
 
@@ -307,18 +306,18 @@ def sequential_gpt(config, devices):
 
 
 class ShardedGPT(nn.Module):
-    def __init__(self, config, device=None):
+    def __init__(self, config, device="cpu", dtype=torch.float32):
         super().__init__()
 
         # input embedding stem
-        self.emb_stem = FSDP(EmbeddingStem(config, device=device))
+        self.emb_stem = FSDP(EmbeddingStem(config, device=device, dtype=dtype))
         # transformer
         self.blocks = nn.Sequential(
-            *[FSDP(Block(config, device=device, fsdp=True)) for _ in range(config.n_layer)]
+            *[FSDP(Block(config, device=device, dtype=dtype, fsdp=True)) for _ in range(config.n_layer)]
         )
         # decoder head
-        self.ln_f = FSDP(nn.LayerNorm(config.n_embd, device=device))
-        self.head = FSDP(nn.Linear(config.n_embd, config.vocab_size, bias=False, device=device))
+        self.ln_f = FSDP(nn.LayerNorm(config.n_embd, device=device, dtype=dtype))
+        self.head = FSDP(nn.Linear(config.n_embd, config.vocab_size, bias=False, device=device, dtype=dtype))
 
         logger.info("number of parameters: %e", sum(p.numel() for p in self.parameters()))
 
