@@ -17,6 +17,8 @@ from torch.nn import functional as F
 
 from torch.distributed._fsdp import FullyShardedDataParallel as FSDP
 
+from fairscale.nn.checkpoint import checkpoint_wrapper
+
 logger = logging.getLogger(__name__)
 
 class GPTConfig:
@@ -162,8 +164,16 @@ class EmbeddingStem(nn.Module):
 class Block(nn.Module):
     """ an unassuming Transformer block """
 
-    def fsdp_wrap(self, m):
-        return FSDP(m) if self.fsdp else m
+    def fsdp_wrap(self, m, activation="noop"):
+        if not self.fsdp:
+            return m
+
+        if activation == "noop":
+            return FSDP(m)
+        elif activation == "checkpoint":
+            return FSDP(checkpoint_wrapper(m))
+        elif activation == "offload":
+            return FSDP(checkpoint_wrapper(m, offload_to_cpu=True))
 
     def __init__(self, config, device=None, dtype=torch.float32, fsdp=False):
         super().__init__()

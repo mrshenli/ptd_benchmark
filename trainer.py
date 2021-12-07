@@ -115,6 +115,18 @@ def parse_args():
         help="the number of micro-batches for pipeline parallelism"
     )
 
+    parser.add_argument(
+        "--activation",
+        type=str,
+        default="noop",
+        help=(
+            "toggles the modes among "
+            "noop: keep activation in GPU "
+            "checkpoint: checkpoint inner activation and recompute"
+            "offload: checkpoint + offload outer activation to CPU"
+        )
+    )
+
     return parser.parse_args()
 
 
