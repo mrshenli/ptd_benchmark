@@ -163,15 +163,19 @@ class EmbeddingStem(nn.Module):
 class Block(nn.Module):
     """ an unassuming Transformer block """
 
-    def __init__(self, config, device=None):
+    def fsdp_wrap(self, m):
+        return FSDP(m) if self.fsdp else m
+
+    def __init__(self, config, device=None, fsdp=False):
         super().__init__()
+        self.fsdp = fsdp
         self.ln1 = nn.LayerNorm(config.n_embd, device=device)
         self.ln2 = nn.LayerNorm(config.n_embd, device=device)
-        self.attn = CausalSelfAttention(config, device=device)
+        self.attn = self.fsdp_wrap(CausalSelfAttention(config, device=device))
         self.mlp = nn.Sequential(
-            nn.Linear(config.n_embd, 4 * config.n_embd, device=device),
+            self.fsdp_wrap(nn.Linear(config.n_embd, 4 * config.n_embd, device=device)),
             nn.GELU(),
-            nn.Linear(4 * config.n_embd, config.n_embd, device=device),
+            self.fsdp_wrap(nn.Linear(4 * config.n_embd, config.n_embd, device=device)),
             nn.Dropout(config.resid_pdrop),
         )
 
@@ -310,7 +314,7 @@ class ShardedGPT(nn.Module):
         self.emb_stem = FSDP(EmbeddingStem(config, device=device))
         # transformer
         self.blocks = nn.Sequential(
-            *[FSDP(Block(config, device=device)) for _ in range(config.n_layer)]
+            *[FSDP(Block(config, device=device, fsdp=True)) for _ in range(config.n_layer)]
         )
         # decoder head
         self.ln_f = FSDP(nn.LayerNorm(config.n_embd, device=device))

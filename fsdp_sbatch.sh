@@ -8,11 +8,13 @@
 
 #SBATCH --nodes=8
 
+#SBATCH --cpus-per-gpu=12
+
 #SBATCH --gpus-per-node=8
 
 #SBATCH --gpus-per-task=1
 
 #SBATCH --time=24:00:00
 
-srun --label ptd.sh
+srun --label fsdp.sh
 

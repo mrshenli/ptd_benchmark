@@ -210,9 +210,9 @@ def train(args):
     now = datetime.now()
     with profile(
         activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-        record_shapes=True,
-        with_stack=True,
-        with_flops=True,
+        # record_shapes=True, # Causes seg fault in export_chrome_trace
+        # with_stack=True, # Causes seg fault with EFA
+        # with_flops=True, # Causes seg fault in export_chrome_trace
         on_trace_ready=my_tensorboard_trace_handler(f"tb/{now.strftime('%Y_%m_%d_%H_%M_%S')}", rank, use_gzip=True)
     ) as prof:
         for i in range(4):
