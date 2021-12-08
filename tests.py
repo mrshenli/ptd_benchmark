@@ -95,14 +95,21 @@ def test_sequential_gpt_large_fp16():
     _test_sequential_gpt(train_config, gpt_config, dtype=torch.float16)
 
 
-def _test_fsdp_gpt_small(dtype):
+def _test_fsdp_gpt_small(dtype, activation="noop"):
     os.environ["MASTER_ADDR"] = "localhost"
     os.environ["MASTER_PORT"] = "5678"
     torch.distributed.init_process_group(backend="nccl", world_size=1, rank=0)
 
     config = TrainConfig()
 
-    gpt = ShardedGPT(GPTSmallConfig(vocab_size=config.vocab_size, block_size=config.block_size)).cuda()
+    gpt = ShardedGPT(
+        GPTSmallConfig(
+            vocab_size=config.vocab_size,
+            block_size=config.block_size,
+        ),
+        dtype=dtype,
+        activation=activation,
+    ).cuda()
 
     print(f"named parameters {len(list(gpt.named_parameters()))}, parameters {len(list(gpt.parameters()))}")
     print(f"{dict(gpt.named_parameters()).keys()}")
@@ -113,7 +120,7 @@ def _test_fsdp_gpt_small(dtype):
     gpt(x).sum().backward()
     opt.step()
 
-    print(f"test Sharded {dtype} GPT3-Small done")
+    print(f"test Sharded {dtype} GPT3-Small done, with activation {activation}")
     torch.distributed.destroy_process_group()
 
 
@@ -125,12 +132,22 @@ def test_fsdp_gpt_small_fp16():
     _test_fsdp_gpt_small(dtype=torch.float16)
 
 
+def test_fsdp_gpt_small_fp16_checkpoint():
+    _test_fsdp_gpt_small(dtype=torch.float16, activation="checkpoint")
+
+
+def test_fsdp_gpt_small_fp16_offload():
+    _test_fsdp_gpt_small(dtype=torch.float16, activation="offload")
+
+
 #test_gpt_small()
 #test_gpt_large()
 #test_sequential_gpt_small()
 #test_sequential_gpt_large()
 #test_fsdp_gpt_small_fp32()
-test_fsdp_gpt_small_fp16()
-test_sequential_gpt_large_fp16()
-test_gpt_large_fp16()
-test_gpt_large_fp32()
+#test_fsdp_gpt_small_fp16()
+#test_sequential_gpt_large_fp16()
+#test_gpt_large_fp16()
+#test_gpt_large_fp32()
+#test_fsdp_gpt_small_fp16_checkpoint()
+test_fsdp_gpt_small_fp16_offload()

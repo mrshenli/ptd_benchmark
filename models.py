@@ -10,6 +10,7 @@ GPT model:
 
 import math
 import logging
+from functools import partial
 
 import torch
 import torch.nn as nn
@@ -82,6 +83,20 @@ class GPT175BConfig(GPTConfig):
     n_layer = 96
     n_head = 96
     n_embd = 12288
+
+
+def module_wrapper(module, fsdp=False, activation="noop"):
+    if not fsdp:
+        return module
+
+    if activation == "noop":
+        return FSDP(module)
+    elif activation == "checkpoint":
+        return FSDP(checkpoint_wrapper(module))
+    elif activation == "offload":
+        return FSDP(checkpoint_wrapper(module, offload_to_cpu=True))
+    else:
+        raise ValueError(f"Unrecognized activation mode {activation}")
 
 
 class CausalSelfAttention(nn.Module):
@@ -164,27 +179,21 @@ class EmbeddingStem(nn.Module):
 class Block(nn.Module):
     """ an unassuming Transformer block """
 
-    def fsdp_wrap(self, m, activation="noop"):
-        if not self.fsdp:
-            return m
-
-        if activation == "noop":
-            return FSDP(m)
-        elif activation == "checkpoint":
-            return FSDP(checkpoint_wrapper(m))
-        elif activation == "offload":
-            return FSDP(checkpoint_wrapper(m, offload_to_cpu=True))
-
-    def __init__(self, config, device=None, dtype=torch.float32, fsdp=False):
+    def __init__(
+        self,
+        config,
+        device=None,
+        dtype=torch.float32,
+        wrapper=lambda m : m,
+    ):
         super().__init__()
-        self.fsdp = fsdp
         self.ln1 = nn.LayerNorm(config.n_embd, device=device, dtype=dtype)
         self.ln2 = nn.LayerNorm(config.n_embd, device=device, dtype=dtype)
-        self.attn = self.fsdp_wrap(CausalSelfAttention(config, device=device, dtype=dtype))
+        self.attn = wrapper(CausalSelfAttention(config, device=device, dtype=dtype))
         self.mlp = nn.Sequential(
-            self.fsdp_wrap(nn.Linear(config.n_embd, 4 * config.n_embd, device=device, dtype=dtype)),
+            wrapper(nn.Linear(config.n_embd, 4 * config.n_embd, device=device, dtype=dtype)),
             nn.GELU(),
-            self.fsdp_wrap(nn.Linear(4 * config.n_embd, config.n_embd, device=device, dtype=dtype)),
+            wrapper(nn.Linear(4 * config.n_embd, config.n_embd, device=device, dtype=dtype)),
             nn.Dropout(config.resid_pdrop),
         )
 
@@ -316,14 +325,16 @@ def sequential_gpt(config, devices, dtype=torch.float32):
 
 
 class ShardedGPT(nn.Module):
-    def __init__(self, config, device="cpu", dtype=torch.float32):
+    def __init__(self, config, device="cpu", dtype=torch.float32, activation="noop"):
         super().__init__()
+
+        wrapper = partial(module_wrapper, fsdp=True, activation=activation)
 
         # input embedding stem
         self.emb_stem = FSDP(EmbeddingStem(config, device=device, dtype=dtype))
         # transformer
         self.blocks = nn.Sequential(
-            *[FSDP(Block(config, device=device, dtype=dtype, fsdp=True)) for _ in range(config.n_layer)]
+            *[wrapper(Block(config, device=device, dtype=dtype, wrapper=FSDP)) for _ in range(config.n_layer)]
         )
         # decoder head
         self.ln_f = FSDP(nn.LayerNorm(config.n_embd, device=device, dtype=dtype))

@@ -27,6 +27,7 @@ import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 from torch.distributed.pipeline.sync import Pipe
+from torch.distributed._fsdp import FullyShardedDataParallel as FSDP
 from torch.profiler import profile, record_function, ProfilerActivity, tensorboard_trace_handler
 
 
@@ -190,7 +191,12 @@ def build_fsdp_model(args):
 
     if args.model.startswith("GPT"):
         # still needs to call to(device) because GPT buffer is still on CPU
-        return ShardedGPT(get_gpt_config(args), device=device, dtype=args.dtype).to(device)
+        return FSDP(ShardedGPT(
+            get_gpt_config(args),
+            device=device,
+            dtype=args.dtype,
+            activation=args.activation,
+        )).to(device)
     elif args.model.startswith("ResNet"):
         # TODO
         raise ValueError("ResNet Model Not Implemented")
@@ -291,6 +297,7 @@ def train(args):
             f"{args.mode}_{args.model}_"
             f"ws{ws}_bs{args.batch_size}_"
             f"vs{args.vocab_size}_blk{args.block_size}_"
+            f"{args.activation}_"
             f"fp{str(args.dtype)[-2:]}"
         )
 
