@@ -1,8 +1,10 @@
 from argparse import Action, ArgumentParser
+import contextlib
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from posix import posix_spawn
+import psutil
 from statistics import stdev
 from typing import Tuple
 import gc
@@ -19,6 +21,7 @@ from models import (
     GPTXXXLConfig,
     GPT13BConfig,
     GPT175BConfig,
+    GPT1TConfig,
     ShardedGPT,
     sequential_gpt
 )
@@ -27,9 +30,9 @@ import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 from torch.distributed.pipeline.sync import Pipe
-from torch.distributed._fsdp import FullyShardedDataParallel as FSDP
 from torch.profiler import profile, record_function, ProfilerActivity, tensorboard_trace_handler
-
+from torch.distributed._fsdp.wrap import enable_wrap, wrap
+from torch.distributed._fsdp import FullyShardedDataParallel as FSDP, CPUOffload
 
 @dataclass
 class TrainConfig:
@@ -39,7 +42,6 @@ class TrainConfig:
     vocab_size : int = 3072
     block_size : int = 128
     batch_size : int = 10
-
 
 class ParseDType(Action):
     def __init__(self, option_strings, dest, nargs=None, **kwargs):
@@ -128,14 +130,30 @@ def parse_args():
         )
     )
 
+    parser.add_argument(
+        "--profile",
+        type=bool,
+        default=False,
+        help="enable profiling the iterations"
+    )
+
+    parser.add_argument(
+        "--cpu-offload",
+        type=bool,
+        default=False,
+        help="enable cpu offload params for FSDP"
+    )
+
     return parser.parse_args()
 
 
-def print_peak_memory(prefix, device):
+def print_memory_summary(prefix, device):
     rank = int(os.getenv("RANK"))
     if rank == 0:
-        print(f"{prefix}: {torch.cuda.max_memory_allocated(device) // 1e6}MB ")
-
+        print(f"{prefix}, GPU memory allocation: {torch.cuda.max_memory_allocated(device) // 1e9}GB "
+              f"CPU used memory percent: {psutil.virtual_memory().percent}, "
+              f"CPU memory available: {psutil.virtual_memory().available // 1e9}GB, ")
+        torch.cuda.reset_peak_memory_stats(device)
 
 def get_gpt_config(args):
     assert args.model.startswith("GPT")
@@ -187,16 +205,23 @@ def build_pdp_model(args):
 
 
 def build_fsdp_model(args):
+    rank = int(os.getenv("RANK"))
+
     device = torch.device("cuda:0")
+
+    cpu_offload_config = None
+    if args.cpu_offload:
+        if rank == 0: 
+            print("Enabling cpu offloading")
+        cpu_offload_config = CPUOffload(offload_params=True)
 
     if args.model.startswith("GPT"):
         # still needs to call to(device) because GPT buffer is still on CPU
-        return FSDP(ShardedGPT(
-            get_gpt_config(args),
-            device=device,
-            dtype=args.dtype,
-            activation=args.activation,
-        )).to(device)
+        with enable_wrap(wrapper_cls=FSDP, cpu_offload=cpu_offload_config):
+            if args.cpu_offload:
+                return wrap(ShardedGPT(get_gpt_config(args), device=device, dtype=args.dtype, activation=args.activation))
+            else:
+                return wrap(ShardedGPT(get_gpt_config(args), device=device, dtype=args.dtype, activation=args.activation)).to(device)
     elif args.model.startswith("ResNet"):
         # TODO
         raise ValueError("ResNet Model Not Implemented")
@@ -225,14 +250,41 @@ def train(args):
     if rank == 0:
         print(f"# of visible devices = {torch.cuda.device_count()}", flush=True)
 
-    # build DDP/Pipeline/FSDP model
-    if args.mode == "ddp":
-        model = build_ddp_model(args)
-    elif args.mode == "pdp":
-        model = build_pdp_model(args)
-    elif args.mode == "fsdp":
-        model = build_fsdp_model(args)
-        print_peak_memory("Memory allocation after model init", "cuda:0")
+    init_start_event = torch.cuda.Event(enable_timing=True)
+    init_end_event = torch.cuda.Event(enable_timing=True)
+    before_forward_event = torch.cuda.Event(enable_timing=True)
+    after_forward_event = torch.cuda.Event(enable_timing=True)
+    after_backward_event = torch.cuda.Event(enable_timing=True)
+    after_step_event = torch.cuda.Event(enable_timing=True)
+    after_zero_grad_event = torch.cuda.Event(enable_timing=True)
+
+    init_start_event.record()
+
+    now = datetime.now()
+    with profile(
+        activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+        # record_shapes=True, # Causes seg fault in export_chrome_trace
+        # with_stack=True, # Causes seg fault with EFA
+        # with_flops=True, # Causes seg fault in export_chrome_trace
+        on_trace_ready=my_tensorboard_trace_handler(f"tb/{now.strftime('%Y_%m_%d_%H_%M_%S')}", rank, use_gzip=True)
+    ) if args.profile else contextlib.nullcontext() as prof:
+        # build DDP/Pipeline/FSDP model
+        if args.mode == "ddp":
+            model = build_ddp_model(args)
+        elif args.mode == "pdp":
+            model = build_pdp_model(args)
+        elif args.mode == "fsdp":
+            model = build_fsdp_model(args)
+
+    init_end_event.record()
+    sync_all_device()
+    dist.barrier()
+
+    if rank == 0:
+        print(f"Building model time: {init_start_event.elapsed_time(init_end_event) / 1000}sec")
+        print(f"{model}")
+
+    print_memory_summary("After model init", "cuda:0")
 
     # build dummy inputs
     if "GPT" in args.model:
@@ -241,21 +293,22 @@ def train(args):
         raise ValueError("Inputs not implemented for non-GPT models")
 
     opt = torch.optim.SGD(model.parameters(), lr=0.01)
-    print_peak_memory("Memory allocation after optimizer", "cuda:0")
+    print_memory_summary("After optimizer", "cuda:0")
 
     # warmup
     for i in range(4):
         out = model(inputs)
-        print_peak_memory(f"Step {i} Memory allocation after forward", "cuda:0")
+        print_memory_summary(f"Step {i} After forward", "cuda:0")
         loss = out.sum() if isinstance(out, torch.Tensor) else out.local_value().sum()
         loss.backward()
-        print_peak_memory(f"Step {i} Memory allocation after backward", "cuda:0")
+        print_memory_summary(f"Step {i} After backward", "cuda:0")
         del loss
         del out
-        print_peak_memory(f"Step {i} Memory allocation after del loss", "cuda:0")
+        print_memory_summary(f"Step {i} After del loss", "cuda:0")
         opt.step()
-        print_peak_memory(f"Step {i} Memory allocation after optimizer", "cuda:0")
+        print_memory_summary(f"Step {i} After optimizer", "cuda:0")
         opt.zero_grad()
+        print_memory_summary(f"Step {i} After zero grad", "cuda:0")
 
     # make sure all pending warm up ops are done
     sync_all_device()
@@ -274,18 +327,29 @@ def train(args):
         with_stack=False,
         with_flops=False,
         on_trace_ready=my_tensorboard_trace_handler(f"tb/{now.strftime('%Y_%m_%d_%H_%M_%S')}", rank, use_gzip=True)
-    ) as prof:
-        # NOTE: using profiler will slowdown training. We should only use it when
-        # we need diagnose
+    ) if args.profile else contextlib.nullcontext() as prof:
         for i in range(n_iters):
+            before_forward_event.record()           
             out = model(inputs)
+            after_forward_event.record()
             loss = out.sum() if isinstance(out, torch.Tensor) else out.local_value().sum()
             loss.backward()
+            after_backward_event.record()
             del loss
             del out
             gc.collect()
             opt.step()
+            after_step_event.record()
             opt.zero_grad()
+            after_zero_grad_event.record()
+            torch.cuda.synchronize()
+            if rank == 0:
+                print(f"train {i}th step, total_latency: {before_forward_event.elapsed_time(after_zero_grad_event) / 1000}sec, "
+                      f"forward_time: {before_forward_event.elapsed_time(after_forward_event) / 1000}sec, "
+                      f"backward_time: {after_forward_event.elapsed_time(after_backward_event) / 1000}sec, "
+                      f"step_time: {after_backward_event.elapsed_time(after_step_event) / 1000}sec, "
+                      f"zero_grad_time: {after_step_event.elapsed_time(after_zero_grad_event) / 1000}sec")
+
 
     sync_all_device()
     tok = time.time()
@@ -311,8 +375,9 @@ def train(args):
         fout.write(f"max mem = {mem // 1e6}MB\n")
         fout.close()
 
-        Path("chrome").mkdir(parents=True, exist_ok=True)
-        prof.export_chrome_trace(f"chrome/{name}.json.gz")
+        if args.profile:
+            Path("chrome").mkdir(parents=True, exist_ok=True)
+            prof.export_chrome_trace(f"chrome/{name}.json.gz")
 
     dist.barrier()
 
