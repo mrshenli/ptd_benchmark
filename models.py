@@ -16,7 +16,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-from torch.distributed._fsdp import FullyShardedDataParallel as FSDP
+from torch.distributed._fsdp.wrap import wrap
 
 from fairscale.nn.checkpoint import checkpoint_wrapper
 
@@ -90,11 +90,11 @@ def module_wrapper(module, fsdp=False, activation="noop"):
         return module
 
     if activation == "noop":
-        return FSDP(module)
+        return wrap(module)
     elif activation == "checkpoint":
-        return FSDP(checkpoint_wrapper(module))
+        return wrap(checkpoint_wrapper(module))
     elif activation == "offload":
-        return FSDP(checkpoint_wrapper(module, offload_to_cpu=True))
+        return wrap(checkpoint_wrapper(module, offload_to_cpu=True))
     else:
         raise ValueError(f"Unrecognized activation mode {activation}")
 
@@ -187,8 +187,8 @@ class Block(nn.Module):
         wrapper=lambda m : m,
     ):
         super().__init__()
-        self.ln1 = nn.LayerNorm(config.n_embd, device=device, dtype=dtype)
-        self.ln2 = nn.LayerNorm(config.n_embd, device=device, dtype=dtype)
+        self.ln1 = wrapper(nn.LayerNorm(config.n_embd, device=device, dtype=dtype))
+        self.ln2 = wrapper(nn.LayerNorm(config.n_embd, device=device, dtype=dtype))
         self.attn = wrapper(CausalSelfAttention(config, device=device, dtype=dtype))
         self.mlp = nn.Sequential(
             wrapper(nn.Linear(config.n_embd, 4 * config.n_embd, device=device, dtype=dtype)),
@@ -331,14 +331,14 @@ class ShardedGPT(nn.Module):
         wrapper = partial(module_wrapper, fsdp=True, activation=activation)
 
         # input embedding stem
-        self.emb_stem = FSDP(EmbeddingStem(config, device=device, dtype=dtype))
+        self.emb_stem = wrap(EmbeddingStem(config, device=device, dtype=dtype))
         # transformer
         self.blocks = nn.Sequential(
-            *[wrapper(Block(config, device=device, dtype=dtype, wrapper=FSDP)) for _ in range(config.n_layer)]
+            *[wrap(Block(config, device=device, dtype=dtype, wrapper=wrapper)) for _ in range(config.n_layer)]
         )
         # decoder head
-        self.ln_f = FSDP(nn.LayerNorm(config.n_embd, device=device, dtype=dtype))
-        self.head = FSDP(nn.Linear(config.n_embd, config.vocab_size, bias=False, device=device, dtype=dtype))
+        self.ln_f = wrap(nn.LayerNorm(config.n_embd, device=device, dtype=dtype))
+        self.head = wrap(nn.Linear(config.n_embd, config.vocab_size, bias=False, device=device, dtype=dtype))
 
         logger.info("number of parameters: %e", sum(p.numel() for p in self.parameters()))
 
