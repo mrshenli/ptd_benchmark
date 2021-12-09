@@ -84,6 +84,11 @@ class GPT175BConfig(GPTConfig):
     n_head = 96
     n_embd = 12288
 
+class GPT1TConfig(GPTConfig):
+    """ GPT3-XL like network roughly 1T params """
+    n_layer = 128
+    n_head = 128
+    n_embd = 25600
 
 def module_wrapper(module, fsdp=False, activation="noop"):
     if not fsdp:
@@ -334,13 +339,13 @@ class ShardedGPT(nn.Module):
         self.emb_stem = wrap(EmbeddingStem(config, device=device, dtype=dtype))
         # transformer
         self.blocks = nn.Sequential(
-            *[wrap(Block(config, device=device, dtype=dtype, wrapper=wrapper)) for _ in range(config.n_layer)]
+            *[wrapper(Block(config, device=device, dtype=dtype, wrapper=wrap)) for _ in range(config.n_layer)]
         )
         # decoder head
         self.ln_f = wrap(nn.LayerNorm(config.n_embd, device=device, dtype=dtype))
         self.head = wrap(nn.Linear(config.n_embd, config.vocab_size, bias=False, device=device, dtype=dtype))
 
-        logger.info("number of parameters: %e", sum(p.numel() for p in self.parameters()))
+        print("number of parameters: %e", sum(p.numel() for p in self.parameters()))
 
     def forward(self, idx):
         x = self.emb_stem(idx)

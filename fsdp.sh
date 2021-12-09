@@ -16,5 +16,4 @@ export CUDA_VISIBLE_DEVICES=${SLURM_LOCALID}
 export WORLD_SIZE=${SLURM_NTASKS}
 export RANK=${SLURM_PROCID}
 
-python -u trainer.py --mode=fsdp --model=GPT175B --dtype="fp16" --vocab_size=50000 --block_size=1024 --batch_size=2 --activation="checkpoint"  --cpu-offload=True
-
+python -u trainer.py --mode=fsdp --model=GPT1T --dtype="fp16" --vocab_size=50000 --block_size=128 --batch_size=1 --activation="checkpoint" --cpu-offload=True

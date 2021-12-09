@@ -21,6 +21,7 @@ from models import (
     GPTXXXLConfig,
     GPT13BConfig,
     GPT175BConfig,
+    GPT1TConfig,
     ShardedGPT,
     sequential_gpt
 )
@@ -204,16 +205,23 @@ def build_pdp_model(args):
 
 
 def build_fsdp_model(args):
+    rank = int(os.getenv("RANK"))
+
     device = torch.device("cuda:0")
 
     cpu_offload_config = None
     if args.cpu_offload:
+        if rank == 0: 
+            print("Enabling cpu offloading")
         cpu_offload_config = CPUOffload(offload_params=True)
 
     if args.model.startswith("GPT"):
         # still needs to call to(device) because GPT buffer is still on CPU
         with enable_wrap(wrapper_cls=FSDP, cpu_offload=cpu_offload_config):
-            return wrap(ShardedGPT(get_gpt_config(args), device=device, dtype=args.dtype, activation=args.activation))
+            if args.cpu_offload:
+                return wrap(ShardedGPT(get_gpt_config(args), device=device, dtype=args.dtype, activation=args.activation))
+            else:
+                return wrap(ShardedGPT(get_gpt_config(args), device=device, dtype=args.dtype, activation=args.activation)).to(device)
     elif args.model.startswith("ResNet"):
         # TODO
         raise ValueError("ResNet Model Not Implemented")
@@ -274,6 +282,7 @@ def train(args):
 
     if rank == 0:
         print(f"Building model time: {init_start_event.elapsed_time(init_end_event) / 1000}sec")
+        print(f"{model}")
 
     print_memory_summary("After model init", "cuda:0")
 

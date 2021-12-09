@@ -6,7 +6,7 @@
 
 #SBATCH --partition=train
 
-#SBATCH --nodes=8
+#SBATCH --nodes=32
 
 #SBATCH --cpus-per-gpu=12
 
