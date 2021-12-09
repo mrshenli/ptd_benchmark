@@ -265,6 +265,7 @@ def train(args):
 
     now = datetime.now()
     n_iters = 4
+    """
     with profile(
         activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
         # record_shapes=True, # Causes seg fault in export_chrome_trace
@@ -275,17 +276,18 @@ def train(args):
         with_flops=False,
         on_trace_ready=my_tensorboard_trace_handler(f"tb/{now.strftime('%Y_%m_%d_%H_%M_%S')}", rank, use_gzip=True)
     ) as prof:
-        # NOTE: using profiler will slowdown training. We should only use it when
-        # we need diagnose
-        for i in range(n_iters):
-            out = model(inputs)
-            loss = out.sum() if isinstance(out, torch.Tensor) else out.local_value().sum()
-            loss.backward()
-            del loss
-            del out
-            gc.collect()
-            opt.step()
-            opt.zero_grad()
+    """
+    # NOTE: using profiler will slowdown training. We should only use it when
+    # we need diagnose
+    for i in range(n_iters):
+        out = model(inputs)
+        loss = out.sum() if isinstance(out, torch.Tensor) else out.local_value().sum()
+        loss.backward()
+        del loss
+        del out
+        gc.collect()
+        opt.step()
+        opt.zero_grad()
 
     sync_all_device()
     tok = time.time()
@@ -311,8 +313,8 @@ def train(args):
         fout.write(f"max mem = {mem // 1e6}MB\n")
         fout.close()
 
-        Path("chrome").mkdir(parents=True, exist_ok=True)
-        prof.export_chrome_trace(f"chrome/{name}.json.gz")
+        #Path("chrome").mkdir(parents=True, exist_ok=True)
+        #prof.export_chrome_trace(f"chrome/{name}.json.gz")
 
     dist.barrier()
 
