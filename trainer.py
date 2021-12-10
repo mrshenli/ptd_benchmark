@@ -343,12 +343,23 @@ def train(args):
             opt.zero_grad()
             after_zero_grad_event.record()
             torch.cuda.synchronize()
+            fwd_list = []
+            bwd_list = []
+            opt_list = []
+            total_latency = before_forward_event.elapsed_time(after_zero_grad_event) / 1000
+            forward_time = before_forward_event.elapsed_time(after_forward_event) / 1000
+            backward_time = after_forward_event.elapsed_time(after_backward_event) / 1000
+            step_time = after_backward_event.elapsed_time(after_step_event) / 1000
+            zero_grad_time = after_step_event.elapsed_time(after_zero_grad_event) / 1000
+            fwd_list.append(forward_time * 100.0 / total_latency)
+            bwd_list.append(backward_time * 100.0 / total_latency)
+            opt_list.append((step_time + zero_grad_time) * 100.0 / total_latency)
             if rank == 0:
-                print(f"train {i}th step, total_latency: {before_forward_event.elapsed_time(after_zero_grad_event) / 1000}sec, "
-                      f"forward_time: {before_forward_event.elapsed_time(after_forward_event) / 1000}sec, "
-                      f"backward_time: {after_forward_event.elapsed_time(after_backward_event) / 1000}sec, "
-                      f"step_time: {after_backward_event.elapsed_time(after_step_event) / 1000}sec, "
-                      f"zero_grad_time: {after_step_event.elapsed_time(after_zero_grad_event) / 1000}sec")
+                print(f"train {i}th step, total_latency: {total_latency}sec, "
+                      f"forward_time: {forward_time}sec, "
+                      f"backward_time: {backward_time}sec, "
+                      f"step_time: {step_time}sec, "
+                      f"zero_grad_time: {zero_grad_time}sec")
 
 
     sync_all_device()
@@ -356,6 +367,7 @@ def train(args):
     delays = [None for _ in range(ws)]
     torch.distributed.all_gather_object(delays, (tok-tik) / n_iters)
 
+    
     if rank == 0:
         name = (
             f"{args.mode}_{args.model}_"
@@ -372,7 +384,9 @@ def train(args):
         fout = open(f"delay/{name}.txt", "w")
         fout.write(f"delays = {sum(delays) / len(delays):.2f} ({stdev(delays):.2f})\n")
         mem = max([torch.cuda.max_memory_allocated(i) for i in range(torch.cuda.device_count())])
-        fout.write(f"max mem = {mem // 1e6}MB\n")
+        fout.write(f"max mem = {mem // 1e9}GB\n")
+        fout.write(f"max cpu mem percent = {psutil.virtual_memory().percent}\n")
+        fout.write(f"forward percent = {sum(fwd_list) / len(fwd_list):.2f}, backward percent = {sum(bwd_list) / len(bwd_list):.2f}, optimizer percent = {sum(opt_list) / len(opt_list):.2f}")
         fout.close()
 
         if args.profile:
