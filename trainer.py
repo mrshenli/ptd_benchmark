@@ -128,6 +128,17 @@ def parse_args():
         )
     )
 
+    parser.add_argument(
+        "--wrap",
+        type=str,
+        default="linear",
+        help=(
+            "Determins how FSDP wraps each transformer. "
+            "linear: wrap inner linear layers "
+            "transfomer: wrap the outer transformer"
+        )
+    )
+
     return parser.parse_args()
 
 
@@ -175,7 +186,12 @@ def build_pdp_model(args):
     devices = [f"cuda:{d}" for d in range(args.ndevice_per_proc)]
     if not args.model.startswith("GPT"):
         raise ValueError("We shouldn't need pipeline for ResNet models")
-    gpt = sequential_gpt(get_gpt_config(args), devices=devices, dtype=args.dtype)
+    gpt = sequential_gpt(
+        get_gpt_config(args),
+        devices=devices,
+        dtype=args.dtype,
+        activation=args.activation,
+    )
     pipe = Pipe(gpt, chunks=args.chunks)
     ddp = DistributedDataParallel(
         pipe,
@@ -279,6 +295,7 @@ def train(args):
     """
     # NOTE: using profiler will slowdown training. We should only use it when
     # we need diagnose
+    #with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
     for i in range(n_iters):
         out = model(inputs)
         loss = out.sum() if isinstance(out, torch.Tensor) else out.local_value().sum()
@@ -305,6 +322,8 @@ def train(args):
 
         if args.mode == "pdp":
             name += f"_ck{args.chunks}_nd{args.ndevice_per_proc}"
+        elif args.mode == "fsdp":
+            name += f"_{args.wrap}"
 
         Path("delay").mkdir(parents=True, exist_ok=True)
         fout = open(f"delay/{name}.txt", "w")
@@ -315,6 +334,8 @@ def train(args):
 
         #Path("chrome").mkdir(parents=True, exist_ok=True)
         #prof.export_chrome_trace(f"chrome/{name}.json.gz")
+        #Path("profiler").mkdir(parents=True, exist_ok=True)
+        #prof.export_chrome_trace(f"profiler/{name}.json")
 
     dist.barrier()
 

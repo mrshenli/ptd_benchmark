@@ -87,16 +87,23 @@ class GPT175BConfig(GPTConfig):
 
 def module_wrapper(module, fsdp=False, activation="noop"):
     if not fsdp:
-        return module
-
-    if activation == "noop":
-        return FSDP(module)
-    elif activation == "checkpoint":
-        return FSDP(checkpoint_wrapper(module))
-    elif activation == "offload":
-        return FSDP(checkpoint_wrapper(module, offload_to_cpu=True))
+        if activation == "noop":
+            return module
+        elif activation == "checkpoint":
+            return checkpoint_wrapper(module)
+        elif activation == "offload":
+            return checkpoint_wrapper(module, offload_to_cpu=True)
+        else:
+            raise ValueError(f"Unrecognized activation mode {activation}")
     else:
-        raise ValueError(f"Unrecognized activation mode {activation}")
+        if activation == "noop":
+            return FSDP(module)
+        elif activation == "checkpoint":
+            return FSDP(checkpoint_wrapper(module))
+        elif activation == "offload":
+            return FSDP(checkpoint_wrapper(module, offload_to_cpu=True))
+        else:
+            raise ValueError(f"Unrecognized activation mode {activation}")
 
 
 class CausalSelfAttention(nn.Module):
@@ -280,16 +287,18 @@ def configure_optimizers(model, train_config):
     return optimizer
 
 
-def sequential_gpt(config, devices, dtype=torch.float32):
+def sequential_gpt(config, devices, dtype=torch.float32, activation="noop"):
     """
     Returns an ``nn.Sequential`` of GPT model balanced across the given devices.
     N.B.: this function does not dedup devices.
     """
+    wrapper = partial(module_wrapper, fsdp=False, activation=activation)
+
     # put all layers into a list
     emb_stem = EmbeddingStem(config, device="meta", dtype=dtype)
-    blocks = [Block(config, device="meta", dtype=dtype) for _ in range(config.n_layer)]
-    ln_f = nn.LayerNorm(config.n_embd, device="meta", dtype=dtype)
-    head = nn.Linear(config.n_embd, config.vocab_size, bias=False, device="meta", dtype=dtype)
+    blocks = [wrapper(Block(config, device="meta", dtype=dtype)) for _ in range(config.n_layer)]
+    ln_f = wrapper(nn.LayerNorm(config.n_embd, device="meta", dtype=dtype))
+    head = wrapper(nn.Linear(config.n_embd, config.vocab_size, bias=False, device="meta", dtype=dtype))
 
     layers = [emb_stem, *blocks, ln_f, head]
 
@@ -325,16 +334,30 @@ def sequential_gpt(config, devices, dtype=torch.float32):
 
 
 class ShardedGPT(nn.Module):
-    def __init__(self, config, device="cpu", dtype=torch.float32, activation="noop"):
+    def __init__(
+        self,
+        config,
+        device="cpu",
+        dtype=torch.float32,
+        activation="noop",
+        wrap="linear",
+    ):
         super().__init__()
 
         wrapper = partial(module_wrapper, fsdp=True, activation=activation)
+
+        if wrap == "linear":
+            transformer_wrap = FSDP
+        elif wrap == "transformer":
+            transformer_wrap = lambda m : m
+        else:
+            raise ValueError("invalid transformer inner wrap policy")
 
         # input embedding stem
         self.emb_stem = FSDP(EmbeddingStem(config, device=device, dtype=dtype))
         # transformer
         self.blocks = nn.Sequential(
-            *[wrapper(Block(config, device=device, dtype=dtype, wrapper=FSDP)) for _ in range(config.n_layer)]
+            *[wrapper(Block(config, device=device, dtype=dtype, wrapper=transformer_wrap)) for _ in range(config.n_layer)]
         )
         # decoder head
         self.ln_f = FSDP(nn.LayerNorm(config.n_embd, device=device, dtype=dtype))
