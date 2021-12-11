@@ -2,6 +2,7 @@ from argparse import Action, ArgumentParser
 import contextlib
 from dataclasses import dataclass
 from datetime import datetime
+import numpy as np
 from pathlib import Path
 from posix import posix_spawn
 import psutil
@@ -236,6 +237,16 @@ def my_tensorboard_trace_handler(dir_name: str, rank, worker_name = None, use_gz
         return None
 
 
+def calc_flop(args):
+    B = args.batch_size
+    s = args.block_size
+    conf = get_gpt_config(args)
+    l = conf.n_layer
+    h = conf.n_embd
+    V = conf.vocab_size
+    return 96 * B * s * l * h * h * (1 + s/6/h + V/16/l/h)
+
+
 def train(args):
     rank = int(os.getenv("RANK"))
     ws = int(os.getenv("WORLD_SIZE"))
@@ -247,8 +258,11 @@ def train(args):
         for d in range(torch.cuda.device_count()):
             torch.cuda.synchronize(d)
 
+    FLOP = calc_flop(args)
+
     if rank == 0:
         print(f"# of visible devices = {torch.cuda.device_count()}", flush=True)
+        print(f"TFLOP per iteration {FLOP // 10**12}")
 
     init_start_event = torch.cuda.Event(enable_timing=True)
     init_end_event = torch.cuda.Event(enable_timing=True)
@@ -359,15 +373,16 @@ def train(args):
                       f"forward_time: {forward_time}sec, "
                       f"backward_time: {backward_time}sec, "
                       f"step_time: {step_time}sec, "
-                      f"zero_grad_time: {zero_grad_time}sec")
+                      f"zero_grad_time: {zero_grad_time}sec, "
+                      f"TFLOP/s/GPU: {FLOP/10**12/total_latency/ws}")
 
 
     sync_all_device()
     tok = time.time()
     delays = [None for _ in range(ws)]
     torch.distributed.all_gather_object(delays, (tok-tik) / n_iters)
+    tflops_gpu = FLOP/ 10**12 * np.reciprocal(np.array(delays)) / ws
 
-    
     if rank == 0:
         name = (
             f"{args.mode}_{args.model}_"
@@ -383,6 +398,7 @@ def train(args):
         Path("delay").mkdir(parents=True, exist_ok=True)
         fout = open(f"delay/{name}.txt", "w")
         fout.write(f"delays = {sum(delays) / len(delays):.2f} ({stdev(delays):.2f})\n")
+        fout.write(f"tflops/gpu = {sum(tflops_gpu) / len(tflops_gpu):.2f} ({stdev(tflops_gpu):.2f})\n")
         mem = max([torch.cuda.max_memory_allocated(i) for i in range(torch.cuda.device_count())])
         fout.write(f"max mem = {mem // 1e9}GB\n")
         fout.write(f"max cpu mem percent = {psutil.virtual_memory().percent}\n")
