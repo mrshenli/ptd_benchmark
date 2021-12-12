@@ -259,8 +259,9 @@ def train(args):
     opt = torch.optim.SGD(model.parameters(), lr=0.01)
     print_peak_memory("Memory allocation after optimizer", "cuda:0")
 
+    n_iters = 4
     # warmup
-    for i in range(4):
+    for i in range(n_iters):
         out = model(inputs)
         print_peak_memory(f"Step {i} Memory allocation after forward", "cuda:0")
         loss = out.sum() if isinstance(out, torch.Tensor) else out.local_value().sum()
@@ -280,7 +281,7 @@ def train(args):
     tik = time.time()
 
     now = datetime.now()
-    n_iters = 4
+
     """
     with profile(
         activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
@@ -328,6 +329,7 @@ def train(args):
         Path("delay").mkdir(parents=True, exist_ok=True)
         fout = open(f"delay/{name}.txt", "w")
         fout.write(f"delays = {sum(delays) / len(delays):.2f} ({stdev(delays):.2f})\n")
+        print(f"delays = {sum(delays) / len(delays):.2f} ({stdev(delays):.2f})\n")
         mem = max([torch.cuda.max_memory_allocated(i) for i in range(torch.cuda.device_count())])
         fout.write(f"max mem = {mem // 1e6}MB\n")
         fout.close()
