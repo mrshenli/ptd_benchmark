@@ -374,14 +374,14 @@ def train(args):
                       f"backward_time: {backward_time}sec, "
                       f"step_time: {step_time}sec, "
                       f"zero_grad_time: {zero_grad_time}sec, "
-                      f"TFLOP/s/GPU: {FLOP/10**12/total_latency/ws}")
+                      f"TFLOP/s/GPU: {FLOP/10**12/total_latency}")
 
 
     sync_all_device()
     tok = time.time()
     delays = [None for _ in range(ws)]
     torch.distributed.all_gather_object(delays, (tok-tik) / n_iters)
-    tflops_gpu = FLOP/ 10**12 * np.reciprocal(np.array(delays)) / ws
+    tflops_gpu = FLOP / 10**12 * np.reciprocal(np.array(delays))
 
     if rank == 0:
         name = (
