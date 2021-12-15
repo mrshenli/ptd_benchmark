@@ -18,7 +18,16 @@ from torch.nn import functional as F
 
 from torch.distributed._fsdp.wrap import wrap
 
-from fairscale.nn.checkpoint import checkpoint_wrapper
+_PT_CHECKPOINT = False
+try:
+    from torch.distributed.algorithms.checkpoint._checkpoint_wrapper import checkpoint_wrapper
+    _PT_CHECKPOINT = True
+    print("Using PT checkpoint_wrapepr")
+except ImportError:
+    print("Falling back to Fairscale checkpoint")
+    from fairscale.nn.checkpoint import checkpoint_wrapper
+
+#from torch.distributed.algorithms.check
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +108,12 @@ def module_wrapper(module, fsdp=False, activation="noop"):
     elif activation == "checkpoint":
         return wrap(checkpoint_wrapper(module))
     elif activation == "offload":
-        return wrap(checkpoint_wrapper(module, offload_to_cpu=True))
+        if _PT_CHECKPOINT:
+            ckpt = checkpoint_wrapper(module)
+            print("Not using activation offloading for pt checkpoint")
+        else:
+            ckpt = checkpoint_wrapper(module, offload_to_cpu=True)
+        return wrap(ckpt)
     else:
         raise ValueError(f"Unrecognized activation mode {activation}")
 
