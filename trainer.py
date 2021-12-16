@@ -163,7 +163,11 @@ def build_ddp_model(args):
     # get local model, for DDP, the entire model resides on cuda:0
     if args.model.startswith("GPT"):
         # still needs to call to(device) because GPT buffer is still on CPU
-        local_model = GPT(get_gpt_config(args), device=device).to(device)
+        local_model = GPT(
+            get_gpt_config(args),
+            device=device,
+            dtype=args.dtype,
+        ).to(device)
     elif args.model.startswith("ResNet"):
         # TODO
         raise ValueError("ResNet Model Not Implementated")

@@ -1,2 +1,2 @@
-delays = 11.57 (0.01)
-max mem = 33672.0MB
+delays = 5.17 (0.00)
+max mem = 16758.0MB
