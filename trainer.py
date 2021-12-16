@@ -354,7 +354,8 @@ def train(args):
             gc.collect()
             opt.step()
             after_step_event.record()
-            opt.zero_grad()
+            for param in model.parameters():
+                param.grad = None
             after_zero_grad_event.record()
             torch.cuda.synchronize()
             fwd_list = []
