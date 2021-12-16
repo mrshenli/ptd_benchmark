@@ -18,7 +18,12 @@ from torch.nn import functional as F
 
 from torch.distributed._fsdp.wrap import wrap
 
-from fairscale.nn.checkpoint import checkpoint_wrapper
+try:
+    from torch.distributed.algorithms._checkpoint._checkpoint_wrapper import checkpoint_wrapper
+    print("Using PT checkpoint_wrapepr")
+except ImportError:
+    print("Falling back to Fairscale checkpoint")
+    from fairscale.nn.checkpoint import checkpoint_wrapper
 
 logger = logging.getLogger(__name__)
 
