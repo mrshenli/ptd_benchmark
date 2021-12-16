@@ -25,8 +25,6 @@ except ImportError:
     print("Falling back to Fairscale checkpoint")
     from fairscale.nn.checkpoint import checkpoint_wrapper
 
-#from torch.distributed.algorithms.check
-
 logger = logging.getLogger(__name__)
 
 class GPTConfig:
