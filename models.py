@@ -106,7 +106,6 @@ def module_wrapper(module, fsdp=False, activation="noop"):
     elif activation == "checkpoint":
         return wrap(checkpoint_wrapper(module))
     elif activation == "offload":
-        print(" --- offloading activations --")
         return wrap(checkpoint_wrapper(module, offload_to_cpu=True))
     else:
         raise ValueError(f"Unrecognized activation mode {activation}")
