@@ -1,1 +1,1 @@
-python -m torch.distributed.run --nnodes=1 --nproc_per_node=2 --rdzv_id=100 --rdzv_endpoint="localhost:5678" trainer.py  --mode=fsdp --model=GPTSmall --batch_size=1 --vocab_size=3072 --block_size=64 --activation="checkpoint" --cpu-offload=True
+python -m torch.distributed.run --nnodes=1 --nproc_per_node=8 --rdzv_id=100 --rdzv_endpoint="localhost:5678" trainer.py  --mode=fsdp --model=GPTSmall --batch_size=1 --vocab_size=3072 --block_size=64 --activation="offload" --cpu-offload=True

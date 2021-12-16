@@ -418,6 +418,8 @@ def setup(args):
         # set the visible devices so that each DDP process only sees one CUDA device
         # N.B.: this has to be done before using any CUDA API from torch
         os.environ["CUDA_VISIBLE_DEVICES"] = f"{local_rank}"
+        set_dev = os.environ["CUDA_VISIBLE_DEVICES"]
+        print(f"rank {local_rank} set visible device to {set_dev}")
     elif args.mode == "pdp":
         local_rank = int(os.getenv("LOCAL_RANK"))
         # N.B.: we cannot call torch.cuda.device_count() to figure out the
