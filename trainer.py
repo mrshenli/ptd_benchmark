@@ -436,6 +436,7 @@ def setup(args):
     if rank == 0:
         print(f"parsed args {args}")
         print(f"World size is {world_size}")
+        print(f"PyTorch version {torch.__version__}")
     dist.init_process_group("nccl", rank=rank, world_size=world_size)
     if args.mode == "pdp":
         # use fake RPC gang for local pipeline
