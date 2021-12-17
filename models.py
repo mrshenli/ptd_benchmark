@@ -8,6 +8,7 @@ GPT model:
 - the final decoder is a linear projection into a vanilla Softmax classifier
 """
 
+import os
 import math
 import logging
 from functools import partial
@@ -18,11 +19,15 @@ from torch.nn import functional as F
 
 from torch.distributed._fsdp.wrap import wrap
 
+rank = int(os.getenv("RANK"))
+
 try:
     from torch.distributed.algorithms._checkpoint._checkpoint_wrapper import checkpoint_wrapper
-    print("Using PT checkpoint_wrapepr")
+    if rank == 0:
+        print("Using PT checkpoint_wrapper")
 except ImportError:
-    print("Falling back to Fairscale checkpoint")
+    if rank == 0:
+        print("Falling back to Fairscale checkpoint")
     from fairscale.nn.checkpoint import checkpoint_wrapper
 
 logger = logging.getLogger(__name__)
