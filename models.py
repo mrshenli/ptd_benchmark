@@ -8,6 +8,7 @@ GPT model:
 - the final decoder is a linear projection into a vanilla Softmax classifier
 """
 
+import os
 import math
 import logging
 from functools import partial
@@ -18,11 +19,15 @@ from torch.nn import functional as F
 
 from torch.distributed._fsdp.wrap import wrap
 
+rank = int(os.getenv("RANK", "0"))
+
 try:
     from torch.distributed.algorithms._checkpoint._checkpoint_wrapper import checkpoint_wrapper
-    print("Using PT checkpoint_wrapepr")
+    if rank == 0:
+        print("Using PT checkpoint_wrapper")
 except ImportError:
-    print("Falling back to Fairscale checkpoint")
+    if rank == 0:
+        print("Falling back to Fairscale checkpoint")
     from fairscale.nn.checkpoint import checkpoint_wrapper
 
 logger = logging.getLogger(__name__)
@@ -350,7 +355,8 @@ class ShardedGPT(nn.Module):
         self.ln_f = wrap(nn.LayerNorm(config.n_embd, device=device, dtype=dtype))
         self.head = wrap(nn.Linear(config.n_embd, config.vocab_size, bias=False, device=device, dtype=dtype))
 
-        print("number of parameters: %e", sum(p.numel() for p in self.parameters()))
+        if rank == 0:
+            print("number of parameters:", sum(p.numel() for p in self.parameters()))
 
     def forward(self, idx):
         x = self.emb_stem(idx)
