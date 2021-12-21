@@ -1,6 +1,6 @@
 from argparse import Action, ArgumentParser
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from posix import posix_spawn
 from statistics import stdev
@@ -18,18 +18,24 @@ from models import (
     GPTXXLConfig,
     GPTXXXLConfig,
     GPT13BConfig,
+    GPT39BConfig,
+    GPT76BConfig,
+    GPT100BConfig,
     GPT175BConfig,
+    GPT310BConfig,
+    GPT459BConfig,
+    GPT1TConfig,
     ShardedGPT,
-    sequential_gpt
+    sequential_gpt,
 )
 
 import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 from torch.distributed.pipeline.sync import Pipe
-from torch.distributed._fsdp import FullyShardedDataParallel as FSDP
 from torch.profiler import profile, record_function, ProfilerActivity, tensorboard_trace_handler
-
+from torch.distributed._fsdp.wrap import enable_wrap, wrap
+from torch.distributed._fsdp import FullyShardedDataParallel as FSDP, CPUOffload
 
 @dataclass
 class TrainConfig:
@@ -139,6 +145,13 @@ def parse_args():
         )
     )
 
+    parser.add_argument(
+        "--cpu_offload",
+        type=bool,
+        default=False,
+        help="enable cpu offload params for FSDP"
+    )
+
     return parser.parse_args()
 
 
@@ -167,6 +180,7 @@ def build_ddp_model(args):
             get_gpt_config(args),
             device=device,
             dtype=args.dtype,
+            activation=args.activation,
         ).to(device)
     elif args.model.startswith("ResNet"):
         # TODO
@@ -209,14 +223,36 @@ def build_pdp_model(args):
 def build_fsdp_model(args):
     device = torch.device("cuda:0")
 
+    if args.cpu_offload:
+        print("==== using param cpu offloading")
+        cpu_offload_config = CPUOffload(offload_params=True)
+
     if args.model.startswith("GPT"):
         # still needs to call to(device) because GPT buffer is still on CPU
+        with enable_wrap(wrapper_cls=FSDP, cpu_offload=cpu_offload_config):
+            if args.cpu_offload:
+                return wrap(ShardedGPT(
+                    get_gpt_config(args),
+                    device=device,
+                    dtype=args.dtype,
+                    activation=args.activation
+                ))
+            else:
+                return wrap(ShardedGPT(
+                    get_gpt_config(args),
+                    device=device,
+                    dtype=args.dtype,
+                    activation=args.activation
+                )).to(device)
+
+        """
         return FSDP(ShardedGPT(
             get_gpt_config(args),
             device=device,
             dtype=args.dtype,
             activation=args.activation,
         )).to(device)
+        """
     elif args.model.startswith("ResNet"):
         # TODO
         raise ValueError("ResNet Model Not Implemented")
@@ -317,12 +353,14 @@ def train(args):
     torch.distributed.all_gather_object(delays, (tok-tik) / n_iters)
 
     if rank == 0:
+        np = os.getenv("LOCAL_WORLD_SIZE")
         name = (
             f"{args.mode}_{args.model}_"
             f"ws{ws}_bs{args.batch_size}_"
             f"vs{args.vocab_size}_blk{args.block_size}_"
             f"{args.activation}_"
-            f"fp{str(args.dtype)[-2:]}"
+            f"fp{str(args.dtype)[-2:]}_"
+            f"np{np}"
         )
 
         if args.mode == "pdp":
@@ -369,7 +407,12 @@ def setup(args):
     if rank == 0:
         print(f"parsed args {args}")
         print(f"World size is {world_size}")
-    dist.init_process_group("nccl", rank=rank, world_size=world_size)
+    dist.init_process_group(
+        "nccl",
+        rank=rank,
+        world_size=world_size,
+        timeout=timedelta(0, 1800000)
+    )
     if args.mode == "pdp":
         # use fake RPC gang for local pipeline
         options = dist.rpc.TensorPipeRpcBackendOptions(

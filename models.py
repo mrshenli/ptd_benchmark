@@ -16,7 +16,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-from torch.distributed._fsdp import FullyShardedDataParallel as FSDP
+from torch.distributed._fsdp.wrap import wrap
 
 from fairscale.nn.checkpoint import checkpoint_wrapper
 
@@ -77,12 +77,52 @@ class GPT13BConfig(GPTConfig):
     n_head = 48
     n_embd = 5184
 
+class GPT39BConfig(GPTConfig):
+    """ GPT3-XL like network roughly 37B params """
+    n_layer = 48
+    n_head = 64
+    n_embd = 7680
+
+
+class GPT76BConfig(GPTConfig):
+    """ GPT3-XL like network roughly 76B params """
+    n_layer = 64
+    n_head = 80
+    n_embd = 10240
+
+
+class GPT100BConfig(GPTConfig):
+    """ GPT3-XL like network roughly 100B params """
+    n_layer = 80
+    n_head = 80
+    n_embd = 10240
+
 
 class GPT175BConfig(GPTConfig):
     """ GPT3-XL like network roughly 175B params """
     n_layer = 96
     n_head = 96
     n_embd = 12288
+
+
+class GPT310BConfig(GPTConfig):
+    """ GPT3-XL like network roughly 310B params """
+    n_layer = 96
+    n_head = 128
+    n_embd = 16384
+
+
+class GPT459BConfig(GPTConfig):
+    """ GPT3-XL like network roughly 459B params """
+    n_layer = 96
+    n_head = 128
+    n_embd = 18432
+
+class GPT1TConfig(GPTConfig):
+    """ GPT3-XL like network roughly 1T params """
+    n_layer = 128
+    n_head = 128
+    n_embd = 25600
 
 
 def module_wrapper(module, fsdp=False, activation="noop"):
@@ -97,11 +137,11 @@ def module_wrapper(module, fsdp=False, activation="noop"):
             raise ValueError(f"Unrecognized activation mode {activation}")
     else:
         if activation == "noop":
-            return FSDP(module)
+            return wrap(module)
         elif activation == "checkpoint":
-            return FSDP(checkpoint_wrapper(module))
+            return wrap(checkpoint_wrapper(module))
         elif activation == "offload":
-            return FSDP(checkpoint_wrapper(module, offload_to_cpu=True))
+            return wrap(checkpoint_wrapper(module, offload_to_cpu=True))
         else:
             raise ValueError(f"Unrecognized activation mode {activation}")
 
@@ -219,18 +259,20 @@ class Block(nn.Module):
 class GPT(nn.Module):
     """  the full GPT language model, with a context size of block_size """
 
-    def __init__(self, config, device="cpu", dtype=torch.float32):
+    def __init__(self, config, device="cpu", dtype=torch.float32, activation="noop"):
         super().__init__()
+
+        wrapper = partial(module_wrapper, fsdp=False, activation=activation)
 
         # input embedding stem
         self.emb_stem = EmbeddingStem(config, device=device, dtype=dtype)
         # transformer
         self.blocks = nn.Sequential(
-            *[Block(config, device=device, dtype=dtype) for _ in range(config.n_layer)]
+            *[wrapper(Block(config, device=device, dtype=dtype)) for _ in range(config.n_layer)]
         )
         # decoder head
         self.ln_f = nn.LayerNorm(config.n_embd, device=device, dtype=dtype)
-        self.head = nn.Linear(config.n_embd, config.vocab_size, bias=False, device=device, dtype=dtype)
+        self.head = wrapper(nn.Linear(config.n_embd, config.vocab_size, bias=False, device=device, dtype=dtype))
 
         logger.info("number of parameters: %e", sum(p.numel() for p in self.parameters()))
 
@@ -340,28 +382,28 @@ class ShardedGPT(nn.Module):
         device="cpu",
         dtype=torch.float32,
         activation="noop",
-        wrap="linear",
+        wrap_config="linear",
     ):
         super().__init__()
 
         wrapper = partial(module_wrapper, fsdp=True, activation=activation)
 
-        if wrap == "linear":
-            transformer_wrap = FSDP
-        elif wrap == "transformer":
+        if wrap_config == "linear":
+            transformer_wrap = wrap
+        elif wrap_config == "transformer":
             transformer_wrap = lambda m : m
         else:
             raise ValueError("invalid transformer inner wrap policy")
 
         # input embedding stem
-        self.emb_stem = FSDP(EmbeddingStem(config, device=device, dtype=dtype))
+        self.emb_stem = wrap(EmbeddingStem(config, device=device, dtype=dtype))
         # transformer
         self.blocks = nn.Sequential(
             *[wrapper(Block(config, device=device, dtype=dtype, wrapper=transformer_wrap)) for _ in range(config.n_layer)]
         )
         # decoder head
-        self.ln_f = FSDP(nn.LayerNorm(config.n_embd, device=device, dtype=dtype))
-        self.head = FSDP(nn.Linear(config.n_embd, config.vocab_size, bias=False, device=device, dtype=dtype))
+        self.ln_f = wrap(nn.LayerNorm(config.n_embd, device=device, dtype=dtype))
+        self.head = wrap(nn.Linear(config.n_embd, config.vocab_size, bias=False, device=device, dtype=dtype))
 
         logger.info("number of parameters: %e", sum(p.numel() for p in self.parameters()))
 
