@@ -34,6 +34,7 @@ from torch.distributed.pipeline.sync import Pipe
 from torch.profiler import profile, record_function, ProfilerActivity, tensorboard_trace_handler
 from torch.distributed._fsdp.wrap import enable_wrap, wrap
 from torch.distributed._fsdp import FullyShardedDataParallel as FSDP, CPUOffload
+from torch.distributed._fsdp.fully_sharded_data_parallel import BackwardPrefetch_
 
 @dataclass
 class TrainConfig:
@@ -145,6 +146,18 @@ def parse_args():
         help="enable cpu offload params for FSDP"
     )
 
+    parser.add_argument(
+        "--prefetch",
+        type=str,
+        default="noop",
+        help=(
+            "toggles the modes among "
+            "noop: no prefetching in the backward "
+            "prehook: prefetching in the backward pre hook"
+            "posthook: prefetching in the backward post hook"
+        )
+    )
+
     return parser.parse_args()
 
 
@@ -215,10 +228,16 @@ def build_fsdp_model(args):
         if rank == 0: 
             print("Enabling cpu offloading")
         cpu_offload_config = CPUOffload(offload_params=True)
+    
+    backward_prefetch = None
+    if args.prefetch == "prehook":
+        backward_prefetch = BackwardPrefetch_.BACKWARD_PRE
+    elif args.prefetch == "posthook":
+        backward_prefetch = BackwardPrefetch_.BACKWARD_POST
 
     if args.model.startswith("GPT"):
         # still needs to call to(device) because GPT buffer is still on CPU
-        with enable_wrap(wrapper_cls=FSDP, cpu_offload=cpu_offload_config):
+        with enable_wrap(wrapper_cls=FSDP, cpu_offload=cpu_offload_config, backward_prefetch=backward_prefetch):
             if args.cpu_offload:
                 return wrap(ShardedGPT(get_gpt_config(args), device=device, dtype=args.dtype, activation=args.activation))
             else:
