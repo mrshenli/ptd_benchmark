@@ -35,6 +35,7 @@ from torch.profiler import profile, record_function, ProfilerActivity, tensorboa
 from torch.distributed._fsdp.wrap import enable_wrap, wrap
 from torch.distributed._fsdp import FullyShardedDataParallel as FSDP, CPUOffload
 from torch.distributed._fsdp.fully_sharded_data_parallel import BackwardPrefetch_
+from fairscale.nn.data_parallel import FullyShardedDataParallel as fairscale_fsdp
 
 @dataclass
 class TrainConfig:
@@ -158,6 +159,17 @@ def parse_args():
         )
     )
 
+    parser.add_argument(
+        "--version",
+        type=str,
+        default="pytorch",
+        help=(
+            "toggles the modes among "
+            "pytorch: train with pytorch fsdp"
+            "fairscale: train with fairscale fsdp"
+        )
+    )
+
     return parser.parse_args()
 
 
@@ -237,11 +249,20 @@ def build_fsdp_model(args):
 
     if args.model.startswith("GPT"):
         # still needs to call to(device) because GPT buffer is still on CPU
-        with enable_wrap(wrapper_cls=FSDP, cpu_offload=cpu_offload_config, backward_prefetch=backward_prefetch):
-            if args.cpu_offload:
-                return wrap(ShardedGPT(get_gpt_config(args), device=device, dtype=args.dtype, activation=args.activation))
-            else:
-                return wrap(ShardedGPT(get_gpt_config(args), device=device, dtype=args.dtype, activation=args.activation)).to(device)
+        if args.version == "pytorch":
+            with enable_wrap(wrapper_cls=FSDP, cpu_offload=cpu_offload_config, backward_prefetch=backward_prefetch):
+                if args.cpu_offload:
+                    return wrap(ShardedGPT(get_gpt_config(args), device=device, dtype=args.dtype, activation=args.activation))
+                else:
+                    return wrap(ShardedGPT(get_gpt_config(args), device=device, dtype=args.dtype, activation=args.activation)).to(device)
+        elif args.version == "fairscale":
+            print("using fairscale fsdp")
+            with enable_wrap(wrapper_cls=fairscale_fsdp, move_params_to_cpu=args.cpu_offload, compute_dtype=torch.float16):
+                if args.cpu_offload:
+                    return wrap(ShardedGPT(get_gpt_config(args), device=device, dtype=args.dtype, activation=args.activation, version=args.version, cpu_offload=True).cpu())
+                else:
+                    return wrap(ShardedGPT(get_gpt_config(args), device=device, dtype=args.dtype, activation=args.activation, version=args.version)).to(device)
+
     elif args.model.startswith("ResNet"):
         # TODO
         raise ValueError("ResNet Model Not Implemented")

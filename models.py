@@ -200,17 +200,31 @@ class Block(nn.Module):
         device=None,
         dtype=torch.float32,
         wrapper=lambda m : m,
+        version="pytorch",
+        cpu_offload=False,
     ):
         super().__init__()
-        self.ln1 = wrapper(nn.LayerNorm(config.n_embd, device=device, dtype=dtype))
-        self.ln2 = wrapper(nn.LayerNorm(config.n_embd, device=device, dtype=dtype))
-        self.attn = wrapper(CausalSelfAttention(config, device=device, dtype=dtype))
-        self.mlp = nn.Sequential(
-            wrapper(nn.Linear(config.n_embd, 4 * config.n_embd, device=device, dtype=dtype)),
-            nn.GELU(),
-            wrapper(nn.Linear(4 * config.n_embd, config.n_embd, device=device, dtype=dtype)),
-            nn.Dropout(config.resid_pdrop),
-        )
+        if version == "pytorch" or not cpu_offload:
+            self.ln1 = wrapper(nn.LayerNorm(config.n_embd, device=device, dtype=dtype))
+            self.ln2 = wrapper(nn.LayerNorm(config.n_embd, device=device, dtype=dtype))
+            self.attn = wrapper(CausalSelfAttention(config, device=device, dtype=dtype))
+            self.mlp = nn.Sequential(
+                wrapper(nn.Linear(config.n_embd, 4 * config.n_embd, device=device, dtype=dtype)),
+                nn.GELU(),
+                wrapper(nn.Linear(4 * config.n_embd, config.n_embd, device=device, dtype=dtype)),
+                nn.Dropout(config.resid_pdrop),
+            )
+        else:
+            print("fairscale fsdp for block")
+            self.ln1 = wrapper(nn.LayerNorm(config.n_embd, device=device, dtype=dtype).cpu())
+            self.ln2 = wrapper(nn.LayerNorm(config.n_embd, device=device, dtype=dtype).cpu())
+            self.attn = wrapper(CausalSelfAttention(config, device=device, dtype=dtype).cpu())
+            self.mlp = nn.Sequential(
+                wrapper(nn.Linear(config.n_embd, 4 * config.n_embd, device=device, dtype=dtype).cpu()),
+                nn.GELU(),
+                wrapper(nn.Linear(4 * config.n_embd, config.n_embd, device=device, dtype=dtype).cpu()),
+                nn.Dropout(config.resid_pdrop),
+            )
 
     def reset_parameters(self):
         self.attn.reset_parameters()
@@ -340,23 +354,36 @@ def sequential_gpt(config, devices, dtype=torch.float32):
 
 
 class ShardedGPT(nn.Module):
-    def __init__(self, config, device="cpu", dtype=torch.float32, activation="noop"):
+    def __init__(self, config, device="cpu", dtype=torch.float32, activation="noop", version="pytorch", cpu_offload=False):
         super().__init__()
 
-        wrapper = partial(module_wrapper, fsdp=True, activation=activation)
+        if version == "pytorch" or not cpu_offload:
+            wrapper = partial(module_wrapper, fsdp=True, activation=activation)
 
-        # input embedding stem
-        self.emb_stem = wrap(EmbeddingStem(config, device=device, dtype=dtype))
-        # transformer
-        self.blocks = nn.Sequential(
-            *[wrapper(Block(config, device=device, dtype=dtype, wrapper=wrap)) for _ in range(config.n_layer)]
-        )
-        # decoder head
-        self.ln_f = wrap(nn.LayerNorm(config.n_embd, device=device, dtype=dtype))
-        self.head = wrap(nn.Linear(config.n_embd, config.vocab_size, bias=False, device=device, dtype=dtype))
+            # input embedding stem
+            self.emb_stem = wrap(EmbeddingStem(config, device=device, dtype=dtype))
+            # transformer
+            self.blocks = nn.Sequential(
+                *[wrapper(Block(config, device=device, dtype=dtype, wrapper=wrap)) for _ in range(config.n_layer)]
+            )
+            # decoder head
+            self.ln_f = wrap(nn.LayerNorm(config.n_embd, device=device, dtype=dtype))
+            self.head = wrap(nn.Linear(config.n_embd, config.vocab_size, bias=False, device=device, dtype=dtype))
 
-        if rank == 0:
-            print("number of parameters:", sum(p.numel() for p in self.parameters()))
+            if rank == 0:
+                print("number of parameters:", sum(p.numel() for p in self.parameters()))
+        else:
+            print("fariscale fsdp for shardedGPT")
+            wrapper = partial(module_wrapper, fsdp=True, activation=activation)
+            # input embedding stem
+            self.emb_stem = wrap(EmbeddingStem(config, device=device, dtype=dtype).cpu())
+            # transformer
+            self.blocks = nn.Sequential(
+                *[wrapper(Block(config, device=device, dtype=dtype, wrapper=wrap, version=version, cpu_offload=True).cpu()) for _ in range(config.n_layer)]
+            )
+            # decoder head
+            self.ln_f = wrap(nn.LayerNorm(config.n_embd, device=device, dtype=dtype).cpu())
+            self.head = wrap(nn.Linear(config.n_embd, config.vocab_size, bias=False, device=device, dtype=dtype).cpu())
 
     def forward(self, idx):
         x = self.emb_stem(idx)
