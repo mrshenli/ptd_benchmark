@@ -6,7 +6,7 @@
 
 #SBATCH --partition=train
 
-#SBATCH --nodes=16
+#SBATCH --nodes=1
 
 #SBATCH --ntasks-per-node=8
 
